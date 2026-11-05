@@ -236,7 +236,7 @@
 <div class="game-overlay" id="game-overlay" hidden>
   <div class="game-box" id="game-box" role="dialog" aria-label="Secret arcade">
     <div class="game-top">
-      <div class="game-top-left"><button id="game-back" hidden aria-label="Back to games">←</button><b id="game-title">🎮 Secret arcade</b></div>
+      <div class="game-top-left"><button id="game-back" hidden aria-label="Back to games">←</button><b id="game-title">🎮 Secret arcade</b><span id="cheat-badge" hidden style="font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;background:#ffd34d;color:#1d1c1a">😎 Cheats on</span></div>
       <button id="game-close" aria-label="Close">✕</button>
     </div>
     <div id="game-menu"></div>
@@ -706,7 +706,24 @@ const arcade = (() => {
   backBtn.onclick = showMenu;
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
-  return { open, GAMES, best, keys };
+  // Secret cheat code: type "glitch" (or tap the game's title 5 times on a phone) to turn cheats on/off.
+  let cheatTyped = '', cheatTaps = [];
+  function toggleCheat() {
+    arcade.cheat = !arcade.cheat;
+    $('cheat-badge').hidden = !arcade.cheat;
+  }
+  document.addEventListener('keydown', (e) => {
+    if (overlay.hidden || e.key.length !== 1) return;
+    cheatTyped = (cheatTyped + e.key.toLowerCase()).slice(-6);
+    if (cheatTyped === 'glitch') { cheatTyped = ''; toggleCheat(); }
+  });
+  titleEl.addEventListener('click', () => {
+    const now = Date.now();
+    cheatTaps = cheatTaps.filter((t) => now - t < 2000).concat(now);
+    if (cheatTaps.length >= 5) { cheatTaps = []; toggleCheat(); }
+  });
+
+  return { open, GAMES, best, keys, cheat: false };
 })();
 
 /* ---------- shared helpers for the games ---------- */
@@ -719,6 +736,7 @@ function gtext(c, t, x, y, size, color = '#fff', align = 'center', weight = 700)
 function dim(c, g) { c.fillStyle = 'rgba(8,8,18,.6)'; c.fillRect(0, 0, g.W, g.H); }
 function finish(g, score) {
   g.mode = 'over'; g.overAt = performance.now();
+  if (arcade.cheat) { g.newBest = false; return; }  // cheat scores don't count
   g.newBest = score > arcade.best.get(g.key);
   if (g.newBest) arcade.best.set(g.key, score);
 }
@@ -740,7 +758,13 @@ arcade.GAMES.plane = {
     if (this.mode === 'ready') { p.y = this.H / 2 + Math.sin(performance.now() / 300) * 8; return; }
     if (this.mode !== 'play') return;
     const speed = 150 + Math.min(this.score, 30) * 3;
+    if (arcade.cheat) {  // cheat: autopilot flies through the next gap
+      const next = this.stacks.find((s) => s.x + this.BW > p.x - 11);
+      const target = next ? next.gapY + 18 : this.H / 2;
+      if (p.y > target && p.vy > -60) p.vy = -400;
+    }
     p.vy += 1400 * dt; p.y += p.vy * dt;
+    if (arcade.cheat) p.y = clamp(p.y, 14, this.H - 14);
     if ((this.spawn -= dt) <= 0) {
       const books = [];
       for (let y = 0; y < this.H; y += 18) books.push({ c: this.COLORS[rnd(this.COLORS.length)], off: (Math.random() - 0.5) * 8 });
@@ -750,7 +774,7 @@ arcade.GAMES.plane = {
     this.stacks.forEach((s) => { s.x -= speed * dt; if (!s.passed && s.x + this.BW < p.x) { s.passed = true; this.score++; } });
     this.stacks = this.stacks.filter((s) => s.x > -this.BW - 10);
     const hit = (s) => p.x + 11 > s.x && p.x - 11 < s.x + this.BW && (p.y - 11 < s.gapY - this.GAP / 2 || p.y + 11 > s.gapY + this.GAP / 2);
-    if (p.y > this.H - 10 || p.y < 10 || this.stacks.some(hit)) finish(this, this.score);
+    if (!arcade.cheat && (p.y > this.H - 10 || p.y < 10 || this.stacks.some(hit))) finish(this, this.score);
   },
   draw(c) {
     const { W, H } = this;
@@ -804,9 +828,10 @@ arcade.GAMES.snake = {
       this.acc -= stepTime;
       if (this.q.length) this.dir = this.q.shift();
       const [dx, dy] = this.V[this.dir], h = { x: this.s[0].x + dx, y: this.s[0].y + dy };
+      if (arcade.cheat) { h.x = (h.x + this.N) % this.N; h.y = (h.y + this.N) % this.N; }  // cheat: wrap around
       const eating = h.x === this.food.x && h.y === this.food.y;
       const body = eating ? this.s : this.s.slice(0, -1);
-      if (h.x < 0 || h.y < 0 || h.x >= this.N || h.y >= this.N || body.some((p) => p.x === h.x && p.y === h.y)) { finish(this, this.score); return; }
+      if (!arcade.cheat && (h.x < 0 || h.y < 0 || h.x >= this.N || h.y >= this.N || body.some((p) => p.x === h.x && p.y === h.y))) { finish(this, this.score); return; }
       this.s.unshift(h);
       if (eating) { this.score++; this.food = this.place(); } else this.s.pop();
     }
@@ -931,7 +956,7 @@ arcade.GAMES.dash = {
       c.speed = c.scared ? 3 : base;
       this.step(c, dt, (a) => this.chooseChaser(a));
       const cp = this.pos(c);
-      if (Math.hypot(cp.x - pp.x, cp.y - pp.y) < this.C * 0.65) {
+      if (Math.hypot(cp.x - pp.x, cp.y - pp.y) < this.C * 0.65 && (c.scared || !arcade.cheat)) {
         if (c.scared) {
           this.score += 200;
           Object.assign(c, { x: 7, y: 9, nx: 7, ny: 9, t: 0, dir: null, scared: false, wait: 2 });
@@ -1110,7 +1135,13 @@ arcade.GAMES.royale = {
       p.angle = Math.atan2(this.aim.y + this.cam.y - p.y, this.aim.x + this.cam.x - p.x);
       fire = this.shooting;
     }
-    if (fire && p.cool <= 0) { this.shoot(p, p.angle + (Math.random() - 0.5) * 0.05, 25); p.cool = 0.22; }
+    if (arcade.cheat) {  // cheat: aimbot locks on to the closest enemy and fires
+      const near = this.bots.map((b) => ({ b, d: Math.hypot(b.x - p.x, b.y - p.y) })).sort((a, c) => a.d - c.d)[0];
+      if (near && near.d < 450) {
+        p.angle = Math.atan2(near.b.y - p.y, near.b.x - p.x); fire = true;
+      }
+    }
+    if (fire && p.cool <= 0) { this.shoot(p, p.angle + (arcade.cheat ? 0 : (Math.random() - 0.5) * 0.05), 25); p.cool = arcade.cheat ? 0.12 : 0.22; }
     // bots
     const all = this.fighters();
     this.bots.forEach((b) => {
@@ -1141,13 +1172,13 @@ arcade.GAMES.royale = {
       if (this.crates.some((c) => u.x > c.x && u.x < c.x + c.w && u.y > c.y && u.y < c.y + c.h)) u.life = 0;
       if (u.life <= 0) return;
       for (const f of this.fighters()) {
-        if (f === u.owner || f.hp <= 0) continue;
+        if (f === u.owner || f.hp <= 0 || (arcade.cheat && f === p)) continue;
         if (Math.hypot(f.x - u.x, f.y - u.y) < f.r + 3) { f.hp -= u.dmg; f.lastHit = u.owner; u.life = 0; break; }
       }
     });
     this.bullets = this.bullets.filter((u) => u.life > 0);
     // storm damage
-    this.fighters().forEach((f) => { if (this.outside(f)) { f.hp -= 9 * dt; f.lastHit = null; } });
+    this.fighters().forEach((f) => { if (this.outside(f) && !(arcade.cheat && f === p)) { f.hp -= 9 * dt; f.lastHit = null; } });
     // deaths
     this.bots = this.bots.filter((b) => {
       if (b.hp > 0) return true;
@@ -1409,6 +1440,7 @@ arcade.GAMES.peak = {
       if (t.kind === 'gem') { if (Math.abs(p.y + 40 - t.y) < 62) { t.done = true; this.gems++; } continue; }
       if (t.kind === 'board') { if (Math.abs(p.y + 40 - t.y) < 70) { t.done = true; p.board = 15; this.say('🏂 Board! It will save you once'); } continue; }
       const hit = t.kind === 'boulder' || (t.kind === 'log' && p.y < 52) || (t.kind === 'branch' && !sliding);
+      if (hit && arcade.cheat) { t.done = true; t.smashed = true; this.puff(10); continue; }  // cheat: smash through
       if (!hit || p.inv > 0) continue;
       t.done = true;
       if (p.board > 0) {
@@ -1463,7 +1495,7 @@ arcade.GAMES.peak = {
     }
   },
   drawThing(c, t) {
-    if (t.done && t.kind !== 'boulder' && t.kind !== 'log' && t.kind !== 'branch') return;
+    if (t.smashed || (t.done && t.kind !== 'boulder' && t.kind !== 'log' && t.kind !== 'branch')) return;
     const x = this.laneX(t.lane), z = t.z;
     if (t.kind === 'gem') {
       const q = this.proj(x, t.y + Math.sin((this.dist + z) / 90) * 6, z), r = 14 * q.s * 2.1;
