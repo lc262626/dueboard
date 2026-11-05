@@ -1241,6 +1241,229 @@ arcade.GAMES.royale = {
   },
 };
 
+/* ---------- 🏃 Hall Pass (3-lane hallway runner) ---------- */
+arcade.GAMES.runner = {
+  icon: '🏃', title: 'Hall Pass', hint: '←/→ or A/D to switch lanes · ↑/W/Space to jump · ↓/S to slide · Phone: swipe',
+  W: 360, H: 560,
+  F: 320,        // focal length (bigger = flatter)
+  HZ: 170,       // horizon height on screen
+  CAM: 330,      // camera height (world units)
+  LANE: 115,     // distance between lanes
+  FAR: 2600,     // how far ahead things appear
+  reset() {
+    this.p = { lane: 1, x: 0, y: 0, vy: 0, slide: 0, run: 0 };
+    this.things = [];   // obstacles + stars
+    this.speed = 560; this.dist = 0; this.stars = 0; this.nextRow = 900;
+    this.scroll = 0; this.mode = 'ready'; this.flash = 0;
+  },
+  laneX(l) { return (l - 1) * this.LANE; },
+  proj(x, y, z) {
+    const s = this.F / (this.F + z);
+    return { x: this.W / 2 + x * s, y: this.HZ + (this.CAM - y) * s, s };
+  },
+  begin() {
+    if (this.mode === 'over') { if (canRestart(this)) this.reset(); return false; }
+    if (this.mode === 'ready') { this.mode = 'play'; return false; }
+    return true;
+  },
+  act(a) {
+    if (!this.begin()) return;
+    const p = this.p;
+    if (a === 'left' && p.lane > 0) p.lane--;
+    if (a === 'right' && p.lane < 2) p.lane++;
+    if (a === 'up' && p.y <= 0.01) { p.vy = 640; p.slide = 0; }
+    if (a === 'down') { if (p.y > 0.01) p.vy = Math.min(p.vy, -900); p.slide = 0.65; }
+  },
+  keydown(code, d) { if (d) this.act(d); else if (code === 'Space') this.act('up'); },
+  swipe(d) { this.act(d); },
+  down() { if (this.mode !== 'play') this.begin(); },
+  spawnRow(z) {
+    // Pick obstacles for a row, always leaving at least one lane you can run straight through.
+    const lanes = [0, 1, 2].sort(() => Math.random() - 0.5);
+    const blocked = 1 + (Math.random() < 0.45 ? 1 : 0);
+    const level = Math.min(1, this.dist / 6000);
+    for (let i = 0; i < blocked; i++) {
+      const r = Math.random();
+      const kind = r < 0.38 ? 'cart' : r < 0.38 + 0.31 ? 'hurdle' : 'banner';
+      this.things.push({ kind, lane: lanes[i], z, hit: false });
+    }
+    // Stars in a free lane: a straight line, or an arc over a hurdle.
+    const free = lanes[blocked];
+    const hurdleLane = this.things.find((t) => t.z === z && t.kind === 'hurdle');
+    if (hurdleLane && Math.random() < 0.6) {
+      for (let k = -2; k <= 2; k++) this.things.push({ kind: 'star', lane: hurdleLane.lane, z: z + k * 60, y: 115 - k * k * 14, got: false });
+    } else {
+      for (let k = 0; k < 5; k++) this.things.push({ kind: 'star', lane: free, z: z - 120 - k * 70, y: 32, got: false });
+    }
+    // Rows come closer together as you go faster.
+    this.nextRow = z + 520 - level * 140 + Math.random() * 160;
+  },
+  update(dt) {
+    const p = this.p;
+    p.x += (this.laneX(p.lane) - p.x) * Math.min(1, dt * 14);  // smooth lane slide
+    if (this.mode === 'ready') { p.run += dt * 6; return; }
+    if (this.mode !== 'play') return;
+    this.speed = Math.min(1250, this.speed + dt * 9);
+    const move = this.speed * dt;
+    this.dist += move; this.scroll = (this.scroll + move) % 200; p.run += dt * this.speed / 60;
+    // Jumping / sliding
+    p.vy -= 1900 * dt; p.y = Math.max(0, p.y + p.vy * dt); if (p.y === 0) p.vy = 0;
+    if (p.slide > 0) p.slide -= dt;
+    // Move everything toward the player
+    this.things.forEach((t) => t.z -= move);
+    this.nextRow -= move;
+    while (this.nextRow < this.FAR) this.spawnRow(this.nextRow + 0.01);
+    this.things = this.things.filter((t) => t.z > -260);
+    // Collisions
+    const myLane = Math.round(p.x / this.LANE) + 1;
+    const sliding = p.slide > 0 && p.y < 10;
+    for (const t of this.things) {
+      if (t.z > 40 || t.z < -40 || t.lane !== myLane) continue;
+      if (t.kind === 'star') { if (!t.got && Math.abs(p.y + 40 - t.y) < 60) { t.got = true; this.stars++; } continue; }
+      if (t.hit) continue;
+      const hit = t.kind === 'cart' || (t.kind === 'hurdle' && p.y < 52) || (t.kind === 'banner' && !sliding);
+      if (hit) { t.hit = true; this.flash = 0.3; finish(this, this.score()); return; }
+    }
+  },
+  score() { return Math.floor(this.dist / 10) + this.stars * 25; },
+  quad(c, pts, fill) { c.fillStyle = fill; c.beginPath(); c.moveTo(pts[0].x, pts[0].y); pts.slice(1).forEach((q) => c.lineTo(q.x, q.y)); c.closePath(); c.fill(); },
+  box(c, x, w, h, z, d, top, front, side) {
+    // A simple 3D box: front face, top face, and the inner side face.
+    const L = x - w / 2, R = x + w / 2;
+    const f = [this.proj(L, 0, z), this.proj(R, 0, z), this.proj(R, h, z), this.proj(L, h, z)];
+    const b = [this.proj(L, 0, z + d), this.proj(R, 0, z + d), this.proj(R, h, z + d), this.proj(L, h, z + d)];
+    if (x > 0) this.quad(c, [f[0], b[0], b[3], f[3]], side);
+    if (x < 0) this.quad(c, [f[1], b[1], b[2], f[2]], side);
+    this.quad(c, [f[3], f[2], b[2], b[3]], top);
+    this.quad(c, f, front);
+    return f;
+  },
+  drawThing(c, t) {
+    const x = this.laneX(t.lane);
+    if (t.kind === 'star') {
+      if (t.got) return;
+      const q = this.proj(x, t.y, t.z), r = 13 * q.s * 2.2;
+      c.save(); c.translate(q.x, q.y); c.rotate(this.dist / 300);
+      c.fillStyle = '#ffd34d'; c.beginPath();
+      for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 ? r * 0.45 : r; c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+      c.closePath(); c.fill(); c.restore();
+      return;
+    }
+    if (t.kind === 'cart') {
+      const f = this.box(c, x, 92, 125, t.z, 70, '#8fa3c7', '#5b6f99', '#47587d');
+      // shelf lines + wheels
+      c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = Math.max(1, 2 * f[0].y / 500);
+      for (const k of [0.33, 0.66]) { const y = f[0].y + (f[3].y - f[0].y) * k; c.beginPath(); c.moveTo(f[0].x, y); c.lineTo(f[1].x, y); c.stroke(); }
+      c.fillStyle = '#222'; const wr = Math.max(1.5, 7 * this.proj(0, 0, t.z).s);
+      [f[0].x + wr * 1.5, f[1].x - wr * 1.5].forEach((wx) => { c.beginPath(); c.arc(wx, f[0].y, wr, 0, 7); c.fill(); });
+    }
+    if (t.kind === 'hurdle') {
+      const L = x - 50, R = x + 50, z = t.z;
+      const legs = [[L, 0, z], [L, 42, z], [R, 0, z], [R, 42, z]].map((a) => this.proj(...a));
+      c.strokeStyle = '#d9d4c7'; c.lineWidth = Math.max(1, 5 * legs[0].s); c.beginPath();
+      c.moveTo(legs[0].x, legs[0].y); c.lineTo(legs[1].x, legs[1].y); c.moveTo(legs[2].x, legs[2].y); c.lineTo(legs[3].x, legs[3].y); c.stroke();
+      const bar = [this.proj(L, 30, z), this.proj(R, 30, z), this.proj(R, 46, z), this.proj(L, 46, z)];
+      this.quad(c, bar, '#ff6b5e');
+      const mid = (bar[0].x + bar[1].x) / 2, bw = (bar[1].x - bar[0].x) / 6;
+      c.fillStyle = '#fff'; c.fillRect(mid - bw / 2, bar[2].y, bw, bar[0].y - bar[2].y);
+    }
+    if (t.kind === 'banner') {
+      const L = x - 55, R = x + 55, z = t.z;
+      const posts = [[L, 0], [L, 135], [R, 0], [R, 135]].map(([a, b]) => this.proj(a, b, z));
+      c.strokeStyle = '#9aa0ad'; c.lineWidth = Math.max(1, 4 * posts[0].s); c.beginPath();
+      c.moveTo(posts[0].x, posts[0].y); c.lineTo(posts[1].x, posts[1].y); c.moveTo(posts[2].x, posts[2].y); c.lineTo(posts[3].x, posts[3].y); c.stroke();
+      const b = [this.proj(L, 62, z), this.proj(R, 62, z), this.proj(R, 132, z), this.proj(L, 132, z)];
+      this.quad(c, b, '#7c9bff');
+      const fs = Math.max(4, 22 * b[0].s * 1.6);
+      if (fs > 6) { c.fillStyle = '#fff'; c.font = `800 ${fs}px Inter, system-ui, sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('GO TEAM', (b[0].x + b[1].x) / 2, (b[0].y + b[2].y) / 2); c.textBaseline = 'alphabetic'; }
+    }
+  },
+  drawPlayer(c) {
+    // Original character: a student in a teal hoodie with an orange backpack, seen from behind.
+    const p = this.p, base = this.proj(p.x, p.y, 0), s = base.s * 1.05;
+    const sliding = p.slide > 0 && p.y < 10;
+    const sw = Math.sin(p.run) * (p.y > 0 ? 0.2 : 1);
+    c.save(); c.translate(base.x, base.y); c.scale(s, s);
+    c.fillStyle = 'rgba(0,0,0,.28)'; c.beginPath(); c.ellipse(0, (this.proj(p.x, 0, 0).y - base.y) / s, 30, 8, 0, 0, 7); c.fill();
+    if (sliding) {
+      c.fillStyle = '#2d3a5a'; c.fillRect(-26, -16, 52, 14);                     // legs out front
+      c.fillStyle = '#2bb3a3'; c.beginPath(); c.roundRect(-24, -40, 48, 28, 10); c.fill();
+      c.fillStyle = '#ff9f43'; c.beginPath(); c.roundRect(-17, -44, 34, 24, 7); c.fill();
+      c.fillStyle = '#6b4a35'; c.beginPath(); c.arc(0, -50, 13, 0, 7); c.fill();
+    } else {
+      c.fillStyle = '#2d3a5a';                                                    // legs
+      c.fillRect(-15, -44 + sw * 6, 11, 44 - sw * 6); c.fillRect(4, -44 - sw * 6, 11, 44 + sw * 6);
+      c.fillStyle = '#f2f2f2'; c.fillRect(-16, -6 + sw * 4, 13, 6); c.fillRect(3, -6 - sw * 4, 13, 6);   // shoes
+      c.fillStyle = '#2bb3a3'; c.beginPath(); c.roundRect(-22, -96, 44, 56, 12); c.fill();               // hoodie
+      c.fillRect(-30, -90 - sw * 8, 10, 34); c.fillRect(20, -90 + sw * 8, 10, 34);                       // arms
+      c.fillStyle = '#ff9f43'; c.beginPath(); c.roundRect(-16, -92, 32, 38, 8); c.fill();                // backpack
+      c.fillStyle = '#e07f22'; c.fillRect(-11, -70, 22, 10);
+      c.fillStyle = '#6b4a35'; c.beginPath(); c.arc(0, -110, 15, 0, 7); c.fill();                        // head (hair)
+      c.fillStyle = '#2bb3a3'; c.beginPath(); c.arc(0, -104, 16, 0.15, Math.PI - 0.15); c.fill();        // hood
+    }
+    c.restore();
+  },
+  draw(c) {
+    const { W, H, HZ } = this;
+    // ceiling + walls + floor
+    const sky = c.createLinearGradient(0, 0, 0, HZ); sky.addColorStop(0, '#2a2f45'); sky.addColorStop(1, '#3b4263');
+    c.fillStyle = sky; c.fillRect(0, 0, W, HZ);
+    const edge = this.LANE * 1.6, far = this.FAR + 400;
+    const fl = [this.proj(-edge, 0, -this.F * 0.6), this.proj(edge, 0, -this.F * 0.6), this.proj(edge, 0, far), this.proj(-edge, 0, far)];
+    c.fillStyle = '#35324a'; c.fillRect(0, HZ, W, H - HZ);
+    // walls with lockers
+    const wallTop = 260;
+    [-1, 1].forEach((side) => {
+      const xw = side * edge;
+      this.quad(c, [this.proj(xw, 0, -this.F * 0.6), this.proj(xw, wallTop, -this.F * 0.6), this.proj(xw, wallTop, far), this.proj(xw, 0, far)], side < 0 ? '#4a5a8c' : '#43527f');
+      for (let z = -this.scroll; z < this.FAR; z += 100) {
+        if (z < -this.F * 0.5) continue;
+        const a = this.proj(xw, 10, z), b = this.proj(xw, 200, z), a2 = this.proj(xw, 10, z + 88), b2 = this.proj(xw, 200, z + 88);
+        this.quad(c, [a, b, b2, a2], side < 0 ? '#5d70ad' : '#55679f');
+        c.fillStyle = 'rgba(20,24,40,.6)'; const v = this.proj(xw, 150, z + 20), v2 = this.proj(xw, 150, z + 60);
+        c.fillRect(Math.min(v.x, v2.x), v.y, Math.max(1, Math.abs(v2.x - v.x)), Math.max(1, 3 * v.s));
+      }
+    });
+    // floor
+    this.quad(c, fl, '#c9b48f');
+    for (let z = -this.scroll; z < this.FAR; z += 100) {
+      if (z < -this.F * 0.5) continue;
+      const a = this.proj(-edge, 0, z), b = this.proj(edge, 0, z), a2 = this.proj(-edge, 0, z + 50), b2 = this.proj(edge, 0, z + 50);
+      this.quad(c, [a, b, b2, a2], '#bda67f');
+    }
+    c.strokeStyle = 'rgba(255,255,255,.45)'; c.lineWidth = 2;
+    [-0.5, 0.5].forEach((k) => { const a = this.proj(k * this.LANE, 0, -this.F * 0.5), b = this.proj(k * this.LANE, 0, far); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); });
+    // fade into the distance
+    const fog = c.createLinearGradient(0, HZ, 0, HZ + 90); fog.addColorStop(0, 'rgba(59,66,99,1)'); fog.addColorStop(1, 'rgba(59,66,99,0)');
+    c.fillStyle = fog; c.fillRect(0, HZ - 1, W, 90);
+    // things behind the player, then the player, then anything already passed
+    const sorted = this.things.slice().sort((a, b) => b.z - a.z);
+    sorted.filter((t) => t.z >= 20).forEach((t) => this.drawThing(c, t));
+    this.drawPlayer(c);
+    sorted.filter((t) => t.z < 20 && t.z > -this.F * 0.55).forEach((t) => this.drawThing(c, t));
+    if (this.flash > 0) { c.fillStyle = `rgba(255,80,60,${this.flash})`; c.fillRect(0, 0, W, H); this.flash = Math.max(0, this.flash - 0.02); }
+    // HUD
+    gtext(c, String(this.score()), W / 2, 40, 30);
+    gtext(c, `⭐ ${this.stars}`, W - 12, 32, 16, '#ffd34d', 'right');
+    const b = arcade.best.get(this.key);
+    if (this.mode === 'ready') {
+      dim(c, this);
+      gtext(c, 'Hall Pass', W / 2, 190, 32);
+      gtext(c, "You're late! Run the hallway and grab ⭐.", W / 2, 224, 14, '#c9c6bd', 'center', 600);
+      gtext(c, '← → switch lanes  ·  ↑ jump  ·  ↓ slide', W / 2, 254, 13, '#c9c6bd', 'center', 600);
+      gtext(c, 'On a phone: swipe in any direction', W / 2, 276, 13, '#c9c6bd', 'center', 600);
+      gtext(c, 'Tap or press any arrow to start', W / 2, 318, 15, '#fff');
+      gtext(c, `Best: ${b}`, W / 2, 350, 14, '#c9c6bd', 'center', 600);
+    }
+    if (this.mode === 'over') {
+      dim(c, this);
+      gtext(c, this.newBest ? 'New best! 🎉' : 'Detention!', W / 2, 220, 28);
+      gtext(c, `Score ${this.score()}  ·  Best ${b}`, W / 2, 256, 17, '#c9c6bd', 'center', 600);
+      gtext(c, 'Tap or press Space to run again', W / 2, 292, 14, '#c9c6bd', 'center', 600);
+    }
+  },
+};
+
 // Secret ways in: click the DueBoard title 5 times fast, or type "fly" (not while typing in a box).
 (() => {
   let clicks = [], typed = '';
