@@ -1241,226 +1241,423 @@ arcade.GAMES.royale = {
   },
 };
 
-/* ---------- 🏃 Hall Pass (3-lane hallway runner) ---------- */
-arcade.GAMES.runner = {
-  icon: '🏃', title: 'Hall Pass', hint: '←/→ or A/D to switch lanes · ↑/W/Space to jump · ↓/S to slide · Phone: swipe',
-  W: 360, H: 560,
-  F: 320,        // focal length (bigger = flatter)
-  HZ: 170,       // horizon height on screen
-  CAM: 330,      // camera height (world units)
-  LANE: 115,     // distance between lanes
-  FAR: 2600,     // how far ahead things appear
+/* ---------- 🏂 Peak Rush (mountain runner: snowboard shield, avalanche chase, brain-teaser revive) ---------- */
+const PEAK_TEASERS = [
+  ['What comes next?  2, 4, 8, 16, …', ['32', '24', '20']],
+  ['A farmer has 17 sheep. All but 9 run away. How many are left?', ['9', '8', '0']],
+  ['Which is heavier: a kilo of feathers or a kilo of rocks?', ['Same', 'Rocks', 'Feathers']],
+  ['What comes next?  1, 1, 2, 3, 5, 8, …', ['13', '11', '16']],
+  ['How many months have 28 days?', ['All 12', '1', '2']],
+  ['If 3 cats catch 3 mice in 3 minutes, how long for 100 cats to catch 100 mice?', ['3 min', '100 min', '33 min']],
+  ['What is 15 × 4?', ['60', '45', '54']],
+  ['A bat and ball cost $1.10. The bat costs $1 more than the ball. The ball costs…', ['5¢', '10¢', '1¢']],
+  ['Which word is spelled wrong in every dictionary?', ['"Wrong"', '"Dictionary"', '"Every"']],
+  ['What comes next?  Z, X, V, T, …', ['R', 'S', 'Q']],
+  ['You pass the runner in 2nd place. What place are you in?', ['2nd', '1st', '3rd']],
+  ['What is half of 2 + 2?', ['3', '2', '4']],
+  ['How many sides do 3 triangles and 2 squares have in total?', ['17', '15', '20']],
+  ['What has keys but can\'t open locks?', ['A piano', 'A map', 'A door']],
+];
+
+arcade.GAMES.peak = {
+  icon: '🏂', title: 'Peak Rush', bestLabel: 'Best',
+  hint: '←/→ switch lanes · ↑/Space jump · ↓ slide · grab the 🏂 board to survive a crash · Phone: swipe',
+  W: 360, H: 560, F: 330, HZ: 205, CAM: 300, LANE: 112, FAR: 2800,
   reset() {
-    this.p = { lane: 1, x: 0, y: 0, vy: 0, slide: 0, run: 0 };
-    this.things = [];   // obstacles + stars
-    this.speed = 560; this.dist = 0; this.stars = 0; this.nextRow = 900;
-    this.scroll = 0; this.mode = 'ready'; this.flash = 0;
+    this.p = { lane: 1, x: 0, y: 0, vy: 0, slide: 0, run: 0, board: 0, inv: 0 };
+    this.things = []; this.trees = []; this.spray = [];
+    this.speed = 600; this.dist = 0; this.gems = 0; this.nextRow = 1000; this.nextBoard = 2500;
+    this.scroll = 0; this.mode = 'ready'; this.flash = 0; this.msg = ''; this.msgT = 0;
+    this.aval = 0.55; this.caughtT = 0; this.revived = false; this.teaser = null;
+    for (let z = 0; z < this.FAR + 400; z += 150) this.addTrees(z);
+    if (!this.flakes) this.flakes = Array.from({ length: 70 }, () => ({ x: Math.random() * this.W, y: Math.random() * this.H, r: 0.6 + Math.random() * 1.8, v: 25 + Math.random() * 45 }));
+    this.buildBackdrop();
   },
   laneX(l) { return (l - 1) * this.LANE; },
-  proj(x, y, z) {
-    const s = this.F / (this.F + z);
-    return { x: this.W / 2 + x * s, y: this.HZ + (this.CAM - y) * s, s };
+  proj(x, y, z) { const s = this.F / (this.F + z); return { x: this.W / 2 + x * s, y: this.HZ + (this.CAM - y) * s, s }; },
+  addTrees(z) {
+    [-1, 1].forEach((side) => {
+      const n = 1 + (Math.random() < 0.6);
+      for (let i = 0; i < n; i++) this.trees.push({ x: side * (this.LANE * 1.75 + 30 + i * 85 + Math.random() * 40), z: z + Math.random() * 120, h: 150 + Math.random() * 110 });
+    });
   },
+
+  /* ---- backdrop: sky, sun and three ranges of snowy peaks, drawn once ---- */
+  buildBackdrop() {
+    const r = window.devicePixelRatio || 1, W = this.W + 40, H = this.HZ + 30;
+    const cv = document.createElement('canvas'); cv.width = W * r; cv.height = H * r;
+    const c = cv.getContext('2d'); c.scale(r, r);
+    const sky = c.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#1d3a6e'); sky.addColorStop(0.55, '#5f86c4'); sky.addColorStop(0.85, '#f3b98a'); sky.addColorStop(1, '#ffd9b0');
+    c.fillStyle = sky; c.fillRect(0, 0, W, H);
+    const sx = W * 0.72, sy = H * 0.62;
+    const glow = c.createRadialGradient(sx, sy, 4, sx, sy, 90); glow.addColorStop(0, 'rgba(255,244,214,.95)'); glow.addColorStop(1, 'rgba(255,214,160,0)');
+    c.fillStyle = glow; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#fff6df'; c.beginPath(); c.arc(sx, sy, 16, 0, 7); c.fill();
+    let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const range = (base, minH, maxH, col, snow) => {
+      const peaks = []; let x = -40;
+      while (x < W + 40) { const w = 60 + rnd() * 90; peaks.push({ x: x + w / 2, w, h: minH + rnd() * (maxH - minH) }); x += w * 0.6; }
+      c.fillStyle = col; c.beginPath(); c.moveTo(-40, H);
+      peaks.forEach((p) => { c.lineTo(p.x - p.w / 2, base); c.lineTo(p.x, base - p.h); c.lineTo(p.x + p.w / 2, base); });
+      c.lineTo(W + 40, H); c.closePath(); c.fill();
+      if (!snow) return;
+      peaks.forEach((p) => {
+        const capH = p.h * 0.36, kx = (p.w / 2) * (capH / p.h);
+        c.fillStyle = snow; c.beginPath(); c.moveTo(p.x, base - p.h); c.lineTo(p.x + kx, base - p.h + capH);
+        for (let i = 3; i >= -3; i--) c.lineTo(p.x + (i / 3) * kx, base - p.h + capH - (i % 2 ? 7 : 0) * (0.6 + rnd() * 0.6));
+        c.closePath(); c.fill();
+        c.fillStyle = 'rgba(40,60,100,.18)'; c.beginPath(); c.moveTo(p.x, base - p.h); c.lineTo(p.x + p.w / 2, base); c.lineTo(p.x + p.w * 0.12, base); c.closePath(); c.fill();
+      });
+    };
+    range(H - 18, 70, 130, '#93a9cf', '#f4f7ff');
+    range(H - 8, 45, 95, '#6782b3', '#e9f0ff');
+    range(H + 2, 18, 45, '#3e5c86', null);
+    // a strip of distant pines
+    c.fillStyle = '#2c4568';
+    for (let x = -10; x < W + 10; x += 7) { const h = 8 + rnd() * 10; c.beginPath(); c.moveTo(x, H); c.lineTo(x + 3.5, H - h); c.lineTo(x + 7, H); c.fill(); }
+    this.backdrop = cv;
+  },
+
+  /* ---- input ---- */
   begin() {
     if (this.mode === 'over') { if (canRestart(this)) this.reset(); return false; }
     if (this.mode === 'ready') { this.mode = 'play'; return false; }
-    return true;
+    return this.mode === 'play';
   },
   act(a) {
     if (!this.begin()) return;
     const p = this.p;
     if (a === 'left' && p.lane > 0) p.lane--;
     if (a === 'right' && p.lane < 2) p.lane++;
-    if (a === 'up' && p.y <= 0.01) { p.vy = 640; p.slide = 0; }
-    if (a === 'down') { if (p.y > 0.01) p.vy = Math.min(p.vy, -900); p.slide = 0.65; }
+    if (a === 'up' && p.y <= 0.01) { p.vy = 660; p.slide = 0; }
+    if (a === 'down') { if (p.y > 0.01) p.vy = Math.min(p.vy, -950); p.slide = 0.65; }
   },
-  keydown(code, d) { if (d) this.act(d); else if (code === 'Space') this.act('up'); },
-  swipe(d) { this.act(d); },
-  down() { if (this.mode !== 'play') this.begin(); },
+  keydown(code, d) {
+    if (this.mode === 'teaser') { const n = { Digit1: 0, Digit2: 1, Digit3: 2, Numpad1: 0, Numpad2: 1, Numpad3: 2 }[code]; if (n != null) this.answer(n); return; }
+    if (d) this.act(d); else if (code === 'Space') this.act('up');
+  },
+  swipe(d) { if (this.mode !== 'teaser') this.act(d); },
+  down(pt) {
+    if (this.mode === 'teaser') { const i = (this.teaser.boxes || []).findIndex((b) => pt.x > b.x && pt.x < b.x + b.w && pt.y > b.y && pt.y < b.y + b.h); if (i >= 0) this.answer(i); return; }
+    if (this.mode !== 'play') this.begin();
+  },
+
+  /* ---- spawning ---- */
   spawnRow(z) {
-    // Pick obstacles for a row, always leaving at least one lane you can run straight through.
     const lanes = [0, 1, 2].sort(() => Math.random() - 0.5);
-    const blocked = 1 + (Math.random() < 0.45 ? 1 : 0);
-    const level = Math.min(1, this.dist / 6000);
+    const level = Math.min(1, this.dist / 7000);
+    const blocked = 1 + (Math.random() < 0.35 + level * 0.25 ? 1 : 0);
     for (let i = 0; i < blocked; i++) {
       const r = Math.random();
-      const kind = r < 0.38 ? 'cart' : r < 0.38 + 0.31 ? 'hurdle' : 'banner';
-      this.things.push({ kind, lane: lanes[i], z, hit: false });
+      this.things.push({ kind: r < 0.4 ? 'boulder' : r < 0.72 ? 'log' : 'branch', lane: lanes[i], z, seed: Math.random() });
     }
-    // Stars in a free lane: a straight line, or an arc over a hurdle.
-    const free = lanes[blocked];
-    const hurdleLane = this.things.find((t) => t.z === z && t.kind === 'hurdle');
-    if (hurdleLane && Math.random() < 0.6) {
-      for (let k = -2; k <= 2; k++) this.things.push({ kind: 'star', lane: hurdleLane.lane, z: z + k * 60, y: 115 - k * k * 14, got: false });
+    const log = this.things.find((t) => t.z === z && t.kind === 'log');
+    if (log && Math.random() < 0.6) {
+      for (let k = -2; k <= 2; k++) this.things.push({ kind: 'gem', lane: log.lane, z: z + k * 60, y: 118 - k * k * 15 });
     } else {
-      for (let k = 0; k < 5; k++) this.things.push({ kind: 'star', lane: free, z: z - 120 - k * 70, y: 32, got: false });
+      for (let k = 0; k < 5; k++) this.things.push({ kind: 'gem', lane: lanes[blocked], z: z - 140 - k * 70, y: 34 });
     }
-    // Rows come closer together as you go faster.
-    this.nextRow = z + 520 - level * 140 + Math.random() * 160;
+    if (this.dist + z > this.nextBoard && !this.p.board) {
+      this.things.push({ kind: 'board', lane: lanes[2] ?? lanes[blocked], z: z - 280, y: 42 });
+      this.nextBoard = this.dist + z + 5000 + Math.random() * 3000;
+    }
+    this.nextRow = z + 540 - level * 160 + Math.random() * 170;
   },
+
+  /* ---- game loop ---- */
   update(dt) {
     const p = this.p;
-    p.x += (this.laneX(p.lane) - p.x) * Math.min(1, dt * 14);  // smooth lane slide
+    this.flakes.forEach((f) => { f.y += f.v * dt; f.x += Math.sin((f.y + f.r * 50) / 40) * 12 * dt; if (f.y > this.H) { f.y = -4; f.x = Math.random() * this.W; } });
+    this.spray.forEach((s) => { s.x += s.vx * dt; s.y += s.vy * dt; s.vy += 260 * dt; s.life -= dt; });
+    this.spray = this.spray.filter((s) => s.life > 0);
+    p.x += (this.laneX(p.lane) - p.x) * Math.min(1, dt * 14);
+    if (this.msgT > 0) this.msgT -= dt;
     if (this.mode === 'ready') { p.run += dt * 6; return; }
+    if (this.mode === 'caught') {
+      this.caughtT += dt; this.aval = Math.min(1.4, this.aval + dt * 1.2);
+      if (this.caughtT > 1.1) this.revived ? finish(this, this.score()) : this.startTeaser();
+      return;
+    }
+    if (this.mode === 'teaser') { this.teaser.t -= dt; if (this.teaser.t <= 0) this.answer(-1); return; }
     if (this.mode !== 'play') return;
-    this.speed = Math.min(1250, this.speed + dt * 9);
+
+    this.speed = Math.min(1300, this.speed + dt * 10);
     const move = this.speed * dt;
-    this.dist += move; this.scroll = (this.scroll + move) % 200; p.run += dt * this.speed / 60;
-    // Jumping / sliding
-    p.vy -= 1900 * dt; p.y = Math.max(0, p.y + p.vy * dt); if (p.y === 0) p.vy = 0;
+    this.dist += move; this.scroll = (this.scroll + move) % 240; p.run += dt * this.speed / 60;
+    p.vy -= 1950 * dt; const wasUp = p.y > 0; p.y = Math.max(0, p.y + p.vy * dt);
+    if (p.y === 0) { if (wasUp) this.puff(10); p.vy = 0; }
     if (p.slide > 0) p.slide -= dt;
-    // Move everything toward the player
+    if (p.inv > 0) p.inv -= dt;
+    if (p.board > 0) { p.board -= dt; if (p.board <= 0) this.say('Board worn out'); }
+    if (p.y === 0 && Math.random() < dt * (p.board ? 30 : 12)) this.puff(1);
+    this.aval = Math.max(0.12, this.aval - dt * 0.07);
+
     this.things.forEach((t) => t.z -= move);
+    this.trees.forEach((t) => t.z -= move);
     this.nextRow -= move;
     while (this.nextRow < this.FAR) this.spawnRow(this.nextRow + 0.01);
-    this.things = this.things.filter((t) => t.z > -260);
-    // Collisions
+    this.things = this.things.filter((t) => t.z > -280);
+    this.trees = this.trees.filter((t) => t.z > -300);
+    const lastTree = this.trees.reduce((m, t) => Math.max(m, t.z), 0);
+    if (lastTree < this.FAR + 250) this.addTrees(lastTree + 150);
+
     const myLane = Math.round(p.x / this.LANE) + 1;
     const sliding = p.slide > 0 && p.y < 10;
     for (const t of this.things) {
-      if (t.z > 40 || t.z < -40 || t.lane !== myLane) continue;
-      if (t.kind === 'star') { if (!t.got && Math.abs(p.y + 40 - t.y) < 60) { t.got = true; this.stars++; } continue; }
-      if (t.hit) continue;
-      const hit = t.kind === 'cart' || (t.kind === 'hurdle' && p.y < 52) || (t.kind === 'banner' && !sliding);
-      if (hit) { t.hit = true; this.flash = 0.3; finish(this, this.score()); return; }
+      if (t.z > 40 || t.z < -40 || t.lane !== myLane || t.done) continue;
+      if (t.kind === 'gem') { if (Math.abs(p.y + 40 - t.y) < 62) { t.done = true; this.gems++; } continue; }
+      if (t.kind === 'board') { if (Math.abs(p.y + 40 - t.y) < 70) { t.done = true; p.board = 15; this.say('🏂 Board! It will save you once'); } continue; }
+      const hit = t.kind === 'boulder' || (t.kind === 'log' && p.y < 52) || (t.kind === 'branch' && !sliding);
+      if (!hit || p.inv > 0) continue;
+      t.done = true;
+      if (p.board > 0) {
+        p.board = 0; p.inv = 1.4; this.aval = 0.95; this.flash = 0.35; this.puff(24);
+        this.say('Board smashed — the avalanche is close!');
+      } else {
+        this.mode = 'caught'; this.caughtT = 0; this.flash = 0.4;
+        return;
+      }
     }
   },
-  score() { return Math.floor(this.dist / 10) + this.stars * 25; },
-  quad(c, pts, fill) { c.fillStyle = fill; c.beginPath(); c.moveTo(pts[0].x, pts[0].y); pts.slice(1).forEach((q) => c.lineTo(q.x, q.y)); c.closePath(); c.fill(); },
-  box(c, x, w, h, z, d, top, front, side) {
-    // A simple 3D box: front face, top face, and the inner side face.
-    const L = x - w / 2, R = x + w / 2;
-    const f = [this.proj(L, 0, z), this.proj(R, 0, z), this.proj(R, h, z), this.proj(L, h, z)];
-    const b = [this.proj(L, 0, z + d), this.proj(R, 0, z + d), this.proj(R, h, z + d), this.proj(L, h, z + d)];
-    if (x > 0) this.quad(c, [f[0], b[0], b[3], f[3]], side);
-    if (x < 0) this.quad(c, [f[1], b[1], b[2], f[2]], side);
-    this.quad(c, [f[3], f[2], b[2], b[3]], top);
-    this.quad(c, f, front);
-    return f;
+  puff(n) {
+    const base = this.proj(this.p.x, 0, 0);
+    for (let i = 0; i < n; i++) this.spray.push({ x: base.x + (Math.random() - 0.5) * 30, y: base.y - 4, vx: (Math.random() - 0.5) * 140, vy: -60 - Math.random() * 120, r: 2 + Math.random() * 4, life: 0.4 + Math.random() * 0.4 });
+  },
+  say(m) { this.msg = m; this.msgT = 2.2; },
+  score() { return Math.floor(this.dist / 10) + this.gems * 25; },
+
+  /* ---- brain teaser revive ---- */
+  startTeaser() {
+    const [q, opts] = PEAK_TEASERS[Math.floor(Math.random() * PEAK_TEASERS.length)];
+    const order = [0, 1, 2].sort(() => Math.random() - 0.5);
+    this.teaser = { q, opts: order.map((i) => opts[i]), correct: order.indexOf(0), t: 15, picked: null };
+    this.mode = 'teaser';
+  },
+  answer(i) {
+    if (this.mode !== 'teaser') return;
+    this.revived = true;
+    if (i === this.teaser.correct) {
+      this.things = this.things.filter((t) => t.z > 700 || t.kind === 'gem');
+      this.p.inv = 2; this.aval = 0.6; this.mode = 'play'; this.say('Correct! Keep running!');
+    } else {
+      finish(this, this.score());
+      this.overNote = i < 0 ? "Time's up!" : `The answer was ${this.teaser.opts[this.teaser.correct]}`;
+    }
+  },
+
+  /* ---- drawing helpers ---- */
+  quad(c, pts, fill) { c.fillStyle = fill; c.beginPath(); c.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) c.lineTo(pts[i].x, pts[i].y); c.closePath(); c.fill(); },
+  shadow(c, x, z, w) { const a = this.proj(x, 0, z); c.fillStyle = 'rgba(40,60,110,.22)'; c.beginPath(); c.ellipse(a.x, a.y, w * a.s, w * a.s * 0.22, 0, 0, 7); c.fill(); },
+  drawTree(c, t) {
+    const b = this.proj(t.x, 0, t.z); if (b.s < 0.05 || t.z < -this.F * 0.6) return;
+    const h = t.h * b.s, w = h * 0.42;
+    c.fillStyle = 'rgba(40,60,110,.18)'; c.beginPath(); c.ellipse(b.x, b.y, w * 0.7, w * 0.14, 0, 0, 7); c.fill();
+    c.fillStyle = '#5a3b26'; c.fillRect(b.x - w * 0.07, b.y - h * 0.14, w * 0.14, h * 0.14);
+    for (let i = 0; i < 3; i++) {
+      const top = b.y - h * (0.42 + i * 0.27), bot = b.y - h * (0.1 + i * 0.25), ww = w * (1 - i * 0.24);
+      c.fillStyle = i % 2 ? '#2f6b4f' : '#265c44';
+      c.beginPath(); c.moveTo(b.x, top - h * 0.1); c.lineTo(b.x + ww / 2, bot); c.lineTo(b.x - ww / 2, bot); c.closePath(); c.fill();
+      c.fillStyle = 'rgba(255,255,255,.9)';
+      c.beginPath(); c.moveTo(b.x, top - h * 0.1); c.lineTo(b.x + ww * 0.22, top + (bot - top) * 0.35); c.lineTo(b.x - ww * 0.22, top + (bot - top) * 0.35); c.closePath(); c.fill();
+    }
   },
   drawThing(c, t) {
-    const x = this.laneX(t.lane);
-    if (t.kind === 'star') {
-      if (t.got) return;
-      const q = this.proj(x, t.y, t.z), r = 13 * q.s * 2.2;
-      c.save(); c.translate(q.x, q.y); c.rotate(this.dist / 300);
-      c.fillStyle = '#ffd34d'; c.beginPath();
-      for (let i = 0; i < 10; i++) { const a = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 ? r * 0.45 : r; c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); }
-      c.closePath(); c.fill(); c.restore();
-      return;
+    if (t.done && t.kind !== 'boulder' && t.kind !== 'log' && t.kind !== 'branch') return;
+    const x = this.laneX(t.lane), z = t.z;
+    if (t.kind === 'gem') {
+      const q = this.proj(x, t.y + Math.sin((this.dist + z) / 90) * 6, z), r = 14 * q.s * 2.1;
+      c.save(); c.translate(q.x, q.y);
+      c.fillStyle = 'rgba(120,220,255,.25)'; c.beginPath(); c.arc(0, 0, r * 1.6, 0, 7); c.fill();
+      c.fillStyle = '#5fd3ff'; c.beginPath(); c.moveTo(0, -r); c.lineTo(r * 0.75, -r * 0.2); c.lineTo(0, r); c.lineTo(-r * 0.75, -r * 0.2); c.closePath(); c.fill();
+      c.fillStyle = '#c9f3ff'; c.beginPath(); c.moveTo(0, -r); c.lineTo(r * 0.75, -r * 0.2); c.lineTo(0, -r * 0.05); c.lineTo(-r * 0.75, -r * 0.2); c.closePath(); c.fill();
+      c.restore(); return;
     }
-    if (t.kind === 'cart') {
-      const f = this.box(c, x, 92, 125, t.z, 70, '#8fa3c7', '#5b6f99', '#47587d');
-      // shelf lines + wheels
-      c.strokeStyle = 'rgba(255,255,255,.35)'; c.lineWidth = Math.max(1, 2 * f[0].y / 500);
-      for (const k of [0.33, 0.66]) { const y = f[0].y + (f[3].y - f[0].y) * k; c.beginPath(); c.moveTo(f[0].x, y); c.lineTo(f[1].x, y); c.stroke(); }
-      c.fillStyle = '#222'; const wr = Math.max(1.5, 7 * this.proj(0, 0, t.z).s);
-      [f[0].x + wr * 1.5, f[1].x - wr * 1.5].forEach((wx) => { c.beginPath(); c.arc(wx, f[0].y, wr, 0, 7); c.fill(); });
+    if (t.kind === 'board') {
+      const q = this.proj(x, t.y + Math.sin(this.dist / 120) * 8, z), s = q.s * 2.2;
+      c.save(); c.translate(q.x, q.y); c.rotate(Math.sin(this.dist / 200) * 0.4);
+      const g = c.createRadialGradient(0, 0, 2, 0, 0, 46 * s); g.addColorStop(0, 'rgba(255,230,120,.6)'); g.addColorStop(1, 'rgba(255,230,120,0)');
+      c.fillStyle = g; c.beginPath(); c.arc(0, 0, 46 * s, 0, 7); c.fill();
+      c.fillStyle = '#a45cff'; c.beginPath(); c.roundRect(-30 * s, -8 * s, 60 * s, 16 * s, 8 * s); c.fill();
+      c.fillStyle = '#ffd34d'; c.fillRect(-18 * s, -2.5 * s, 36 * s, 5 * s);
+      c.restore(); return;
     }
-    if (t.kind === 'hurdle') {
-      const L = x - 50, R = x + 50, z = t.z;
-      const legs = [[L, 0, z], [L, 42, z], [R, 0, z], [R, 42, z]].map((a) => this.proj(...a));
-      c.strokeStyle = '#d9d4c7'; c.lineWidth = Math.max(1, 5 * legs[0].s); c.beginPath();
-      c.moveTo(legs[0].x, legs[0].y); c.lineTo(legs[1].x, legs[1].y); c.moveTo(legs[2].x, legs[2].y); c.lineTo(legs[3].x, legs[3].y); c.stroke();
-      const bar = [this.proj(L, 30, z), this.proj(R, 30, z), this.proj(R, 46, z), this.proj(L, 46, z)];
-      this.quad(c, bar, '#ff6b5e');
-      const mid = (bar[0].x + bar[1].x) / 2, bw = (bar[1].x - bar[0].x) / 6;
-      c.fillStyle = '#fff'; c.fillRect(mid - bw / 2, bar[2].y, bw, bar[0].y - bar[2].y);
+    this.shadow(c, x, z, t.kind === 'boulder' ? 62 : 58);
+    if (t.kind === 'boulder') {
+      const b = this.proj(x, 0, z), s = b.s, w = 96 * s, h = 112 * s;
+      const g = c.createLinearGradient(b.x - w / 2, 0, b.x + w / 2, 0); g.addColorStop(0, '#9aa3b4'); g.addColorStop(0.6, '#6b7486'); g.addColorStop(1, '#4b5263');
+      c.fillStyle = g; c.beginPath();
+      c.moveTo(b.x - w * 0.5, b.y); c.lineTo(b.x - w * 0.46, b.y - h * 0.55); c.lineTo(b.x - w * 0.22, b.y - h * 0.95); c.lineTo(b.x + w * 0.18, b.y - h); c.lineTo(b.x + w * 0.48, b.y - h * 0.6); c.lineTo(b.x + w * 0.5, b.y);
+      c.closePath(); c.fill();
+      c.fillStyle = '#f4f8ff'; c.beginPath();
+      c.moveTo(b.x - w * 0.24, b.y - h * 0.94); c.lineTo(b.x + w * 0.18, b.y - h * 1.02); c.lineTo(b.x + w * 0.42, b.y - h * 0.66); c.lineTo(b.x + w * 0.1, b.y - h * 0.78); c.lineTo(b.x - w * 0.36, b.y - h * 0.7); c.closePath(); c.fill();
+      c.strokeStyle = 'rgba(30,35,50,.35)'; c.lineWidth = Math.max(1, 2 * s); c.beginPath(); c.moveTo(b.x - w * 0.1, b.y - h * 0.5); c.lineTo(b.x + w * 0.12, b.y - h * 0.2); c.stroke();
     }
-    if (t.kind === 'banner') {
-      const L = x - 55, R = x + 55, z = t.z;
-      const posts = [[L, 0], [L, 135], [R, 0], [R, 135]].map(([a, b]) => this.proj(a, b, z));
-      c.strokeStyle = '#9aa0ad'; c.lineWidth = Math.max(1, 4 * posts[0].s); c.beginPath();
+    if (t.kind === 'log') {
+      const L = this.proj(x - 52, 0, z), R = this.proj(x + 52, 0, z), s = L.s, rad = 22 * s;
+      const g = c.createLinearGradient(0, L.y - rad * 2, 0, L.y); g.addColorStop(0, '#9b6a43'); g.addColorStop(1, '#5c3a22');
+      c.fillStyle = g; c.fillRect(L.x, L.y - rad * 2, R.x - L.x, rad * 2);
+      c.fillStyle = '#f4f8ff'; c.beginPath(); c.roundRect(L.x, L.y - rad * 2 - 3 * s, R.x - L.x, 7 * s, 3 * s); c.fill();
+      [L.x, R.x].forEach((ex) => { c.fillStyle = '#d8b48a'; c.beginPath(); c.ellipse(ex, L.y - rad, rad * 0.55, rad, 0, 0, 7); c.fill(); c.strokeStyle = '#a57a51'; c.lineWidth = Math.max(0.7, 1.5 * s); c.beginPath(); c.ellipse(ex, L.y - rad, rad * 0.3, rad * 0.55, 0, 0, 7); c.stroke(); });
+    }
+    if (t.kind === 'branch') {
+      const s = this.proj(x, 0, z).s, L = x - 60, R = x + 60;
+      const posts = [[L, 0], [L, 140], [R, 0], [R, 140]].map(([a, b]) => this.proj(a, b, z));
+      c.strokeStyle = '#5a3b26'; c.lineWidth = Math.max(1.5, 8 * s); c.lineCap = 'round'; c.beginPath();
       c.moveTo(posts[0].x, posts[0].y); c.lineTo(posts[1].x, posts[1].y); c.moveTo(posts[2].x, posts[2].y); c.lineTo(posts[3].x, posts[3].y); c.stroke();
-      const b = [this.proj(L, 62, z), this.proj(R, 62, z), this.proj(R, 132, z), this.proj(L, 132, z)];
-      this.quad(c, b, '#7c9bff');
-      const fs = Math.max(4, 22 * b[0].s * 1.6);
-      if (fs > 6) { c.fillStyle = '#fff'; c.font = `800 ${fs}px Inter, system-ui, sans-serif`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('GO TEAM', (b[0].x + b[1].x) / 2, (b[0].y + b[2].y) / 2); c.textBaseline = 'alphabetic'; }
+      const top = this.proj(L, 132, z), bot = this.proj(R, 66, z);
+      c.fillStyle = '#7a5233'; c.fillRect(top.x, top.y, bot.x - top.x, (bot.y - top.y) * 0.45);
+      c.fillStyle = '#f4f8ff'; c.beginPath(); c.roundRect(top.x - 4 * s, top.y - 8 * s, bot.x - top.x + 8 * s, 12 * s, 6 * s); c.fill();
+      c.fillStyle = '#ff6b5e'; const sy = top.y + (bot.y - top.y) * 0.45;
+      for (let i = 0; i < 6; i++) { const fx = top.x + (bot.x - top.x) * (i + 0.5) / 6; c.beginPath(); c.moveTo(fx - 7 * s, sy); c.lineTo(fx + 7 * s, sy); c.lineTo(fx, sy + 16 * s); c.closePath(); c.fill(); }
+      c.lineCap = 'butt';
     }
   },
   drawPlayer(c) {
-    // Original character: a student in a teal hoodie with an orange backpack, seen from behind.
+    // Original character: a mountaineer in a red jacket and yellow beanie, seen from behind.
     const p = this.p, base = this.proj(p.x, p.y, 0), s = base.s * 1.05;
-    const sliding = p.slide > 0 && p.y < 10;
-    const sw = Math.sin(p.run) * (p.y > 0 ? 0.2 : 1);
+    if (p.inv > 0 && Math.floor(p.inv * 12) % 2) return;
+    const sliding = p.slide > 0 && p.y < 10, onBoard = p.board > 0;
+    const sw = onBoard ? 0 : Math.sin(p.run) * (p.y > 0 ? 0.25 : 1);
+    const ground = this.proj(p.x, 0, 0);
     c.save(); c.translate(base.x, base.y); c.scale(s, s);
-    c.fillStyle = 'rgba(0,0,0,.28)'; c.beginPath(); c.ellipse(0, (this.proj(p.x, 0, 0).y - base.y) / s, 30, 8, 0, 0, 7); c.fill();
+    c.fillStyle = 'rgba(30,50,100,.25)'; c.beginPath(); c.ellipse(0, (ground.y - base.y) / s, 32, 8, 0, 0, 7); c.fill();
+    if (onBoard) {
+      const g = c.createRadialGradient(0, -2, 4, 0, -2, 60); g.addColorStop(0, 'rgba(255,220,110,.45)'); g.addColorStop(1, 'rgba(255,220,110,0)');
+      c.fillStyle = g; c.beginPath(); c.arc(0, -2, 60, 0, 7); c.fill();
+      c.fillStyle = '#a45cff'; c.beginPath(); c.roundRect(-38, -8, 76, 12, 6); c.fill();
+      c.fillStyle = '#ffd34d'; c.fillRect(-24, -4, 48, 4);
+      c.translate(0, -8);
+    }
     if (sliding) {
-      c.fillStyle = '#2d3a5a'; c.fillRect(-26, -16, 52, 14);                     // legs out front
-      c.fillStyle = '#2bb3a3'; c.beginPath(); c.roundRect(-24, -40, 48, 28, 10); c.fill();
-      c.fillStyle = '#ff9f43'; c.beginPath(); c.roundRect(-17, -44, 34, 24, 7); c.fill();
-      c.fillStyle = '#6b4a35'; c.beginPath(); c.arc(0, -50, 13, 0, 7); c.fill();
+      c.fillStyle = '#2b3550'; c.beginPath(); c.roundRect(-28, -18, 56, 14, 6); c.fill();
+      c.fillStyle = '#d9473b'; c.beginPath(); c.roundRect(-25, -44, 50, 30, 12); c.fill();
+      c.fillStyle = '#4f6b5a'; c.beginPath(); c.roundRect(-17, -48, 34, 24, 7); c.fill();
+      c.fillStyle = '#ffcc33'; c.beginPath(); c.arc(0, -55, 13, Math.PI, 0); c.fill(); c.fillRect(-13, -56, 26, 6);
     } else {
-      c.fillStyle = '#2d3a5a';                                                    // legs
-      c.fillRect(-15, -44 + sw * 6, 11, 44 - sw * 6); c.fillRect(4, -44 - sw * 6, 11, 44 + sw * 6);
-      c.fillStyle = '#f2f2f2'; c.fillRect(-16, -6 + sw * 4, 13, 6); c.fillRect(3, -6 - sw * 4, 13, 6);   // shoes
-      c.fillStyle = '#2bb3a3'; c.beginPath(); c.roundRect(-22, -96, 44, 56, 12); c.fill();               // hoodie
-      c.fillRect(-30, -90 - sw * 8, 10, 34); c.fillRect(20, -90 + sw * 8, 10, 34);                       // arms
-      c.fillStyle = '#ff9f43'; c.beginPath(); c.roundRect(-16, -92, 32, 38, 8); c.fill();                // backpack
-      c.fillStyle = '#e07f22'; c.fillRect(-11, -70, 22, 10);
-      c.fillStyle = '#6b4a35'; c.beginPath(); c.arc(0, -110, 15, 0, 7); c.fill();                        // head (hair)
-      c.fillStyle = '#2bb3a3'; c.beginPath(); c.arc(0, -104, 16, 0.15, Math.PI - 0.15); c.fill();        // hood
+      const crouch = onBoard ? 8 : 0;
+      c.fillStyle = '#2b3550';
+      c.beginPath(); c.roundRect(-16, -46 + crouch + sw * 6, 12, 46 - crouch - sw * 6, 4); c.fill();
+      c.beginPath(); c.roundRect(4, -46 + crouch - sw * 6, 12, 46 - crouch + sw * 6, 4); c.fill();
+      c.fillStyle = '#3a2a24'; c.beginPath(); c.roundRect(-18, -7 + sw * 4, 15, 8, 3); c.roundRect(3, -7 - sw * 4, 15, 8, 3); c.fill();
+      const jg = c.createLinearGradient(-24, 0, 24, 0); jg.addColorStop(0, '#f05a4c'); jg.addColorStop(1, '#b8342b');
+      c.fillStyle = jg; c.beginPath(); c.roundRect(-24, -100 + crouch, 48, 60, 14); c.fill();
+      c.beginPath(); c.roundRect(-33, -94 + crouch - sw * 8, 11, 36, 5); c.roundRect(22, -94 + crouch + sw * 8, 11, 36, 5); c.fill();
+      c.fillStyle = '#4f6b5a'; c.beginPath(); c.roundRect(-17, -96 + crouch, 34, 42, 9); c.fill();
+      c.fillStyle = '#3d5546'; c.fillRect(-12, -72 + crouch, 24, 10);
+      c.fillStyle = '#d9d4c7'; c.fillRect(-14, -98 + crouch, 28, 4);
+      c.fillStyle = '#5a3b26'; c.beginPath(); c.arc(0, -112 + crouch, 15, 0, 7); c.fill();
+      c.fillStyle = '#ffcc33'; c.beginPath(); c.arc(0, -114 + crouch, 16, Math.PI, 0); c.fill(); c.fillRect(-16, -116 + crouch, 32, 7);
+      c.fillStyle = '#fff'; c.beginPath(); c.arc(0, -132 + crouch, 6, 0, 7); c.fill();
+      c.fillStyle = '#222'; c.fillRect(-15, -108 + crouch, 30, 3);
     }
     c.restore();
   },
-  draw(c) {
-    const { W, H, HZ } = this;
-    // ceiling + walls + floor
-    const sky = c.createLinearGradient(0, 0, 0, HZ); sky.addColorStop(0, '#2a2f45'); sky.addColorStop(1, '#3b4263');
-    c.fillStyle = sky; c.fillRect(0, 0, W, HZ);
-    const edge = this.LANE * 1.6, far = this.FAR + 400;
-    const fl = [this.proj(-edge, 0, -this.F * 0.6), this.proj(edge, 0, -this.F * 0.6), this.proj(edge, 0, far), this.proj(-edge, 0, far)];
-    c.fillStyle = '#35324a'; c.fillRect(0, HZ, W, H - HZ);
-    // walls with lockers
-    const wallTop = 260;
-    [-1, 1].forEach((side) => {
-      const xw = side * edge;
-      this.quad(c, [this.proj(xw, 0, -this.F * 0.6), this.proj(xw, wallTop, -this.F * 0.6), this.proj(xw, wallTop, far), this.proj(xw, 0, far)], side < 0 ? '#4a5a8c' : '#43527f');
-      for (let z = -this.scroll; z < this.FAR; z += 100) {
-        if (z < -this.F * 0.5) continue;
-        const a = this.proj(xw, 10, z), b = this.proj(xw, 200, z), a2 = this.proj(xw, 10, z + 88), b2 = this.proj(xw, 200, z + 88);
-        this.quad(c, [a, b, b2, a2], side < 0 ? '#5d70ad' : '#55679f');
-        c.fillStyle = 'rgba(20,24,40,.6)'; const v = this.proj(xw, 150, z + 20), v2 = this.proj(xw, 150, z + 60);
-        c.fillRect(Math.min(v.x, v2.x), v.y, Math.max(1, Math.abs(v2.x - v.x)), Math.max(1, 3 * v.s));
-      }
-    });
-    // floor
-    this.quad(c, fl, '#c9b48f');
-    for (let z = -this.scroll; z < this.FAR; z += 100) {
-      if (z < -this.F * 0.5) continue;
-      const a = this.proj(-edge, 0, z), b = this.proj(edge, 0, z), a2 = this.proj(-edge, 0, z + 50), b2 = this.proj(edge, 0, z + 50);
-      this.quad(c, [a, b, b2, a2], '#bda67f');
+  drawAvalanche(c, level) {
+    const { W, H } = this, t = performance.now() / 1000, top = H - (12 + Math.min(level, 1) * 70 + Math.max(0, level - 1) * 1400);
+    const g = c.createLinearGradient(0, top - 40, 0, H); g.addColorStop(0, 'rgba(245,250,255,0)'); g.addColorStop(0.35, 'rgba(245,250,255,.85)'); g.addColorStop(1, 'rgba(255,255,255,1)');
+    c.fillStyle = g; c.fillRect(0, top - 40, W, H - top + 40);
+    for (let i = 0; i < 12; i++) {
+      const bx = (i / 11) * W, by = top + Math.sin(t * 3 + i * 1.7) * 6, r = 16 + (i % 3) * 7 + Math.min(level, 1) * 12;
+      c.fillStyle = i % 2 ? 'rgba(255,255,255,.95)' : 'rgba(222,233,250,.95)';
+      c.beginPath(); c.arc(bx, by, r, 0, 7); c.fill();
     }
-    c.strokeStyle = 'rgba(255,255,255,.45)'; c.lineWidth = 2;
-    [-0.5, 0.5].forEach((k) => { const a = this.proj(k * this.LANE, 0, -this.F * 0.5), b = this.proj(k * this.LANE, 0, far); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); });
-    // fade into the distance
-    const fog = c.createLinearGradient(0, HZ, 0, HZ + 90); fog.addColorStop(0, 'rgba(59,66,99,1)'); fog.addColorStop(1, 'rgba(59,66,99,0)');
-    c.fillStyle = fog; c.fillRect(0, HZ - 1, W, 90);
-    // things behind the player, then the player, then anything already passed
+    c.fillStyle = 'rgba(255,255,255,.95)'; c.fillRect(0, top, W, H - top);
+  },
+
+  draw(c) {
+    const { W, H, HZ } = this, p = this.p;
+    if (!this.backdrop) this.buildBackdrop();
+    c.drawImage(this.backdrop, -20 - p.x * 0.05, 0, W + 40, HZ + 30);
+    // snowy ground
+    const gg = c.createLinearGradient(0, HZ, 0, H); gg.addColorStop(0, '#dfe8f7'); gg.addColorStop(1, '#f7faff');
+    c.fillStyle = gg; c.fillRect(0, HZ + 20, W, H - HZ - 20);
+    const edge = this.LANE * 1.6, near = -this.F * 0.6, far = this.FAR + 500;
+    c.fillStyle = gg; this.quad(c, [this.proj(-edge * 6, 0, near), this.proj(edge * 6, 0, near), this.proj(edge * 6, 0, far), this.proj(-edge * 6, 0, far)], '#e3ebf8');
+    // packed trail with moving bands
+    this.quad(c, [this.proj(-edge, 0, near), this.proj(edge, 0, near), this.proj(edge, 0, far), this.proj(-edge, 0, far)], '#cfdcf0');
+    for (let z = -this.scroll; z < this.FAR; z += 240) {
+      if (z < near) continue;
+      this.quad(c, [this.proj(-edge, 0, z), this.proj(edge, 0, z), this.proj(edge, 0, z + 110), this.proj(-edge, 0, z + 110)], '#c4d3ea');
+    }
+    // ski tracks in each lane
+    c.strokeStyle = 'rgba(120,145,190,.35)'; c.lineWidth = 1.5;
+    [0, 1, 2].forEach((l) => [-14, 14].forEach((o) => { const a = this.proj(this.laneX(l) + o, 0, near * 0.8), b = this.proj(this.laneX(l) + o, 0, far); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); }));
+    // trail edges: snow banks
+    [-1, 1].forEach((side) => {
+      this.quad(c, [this.proj(side * edge, 0, near), this.proj(side * edge, 18, near), this.proj(side * edge, 18, far), this.proj(side * edge, 0, far)], '#f4f8ff');
+    });
+    // haze at the horizon
+    const fog = c.createLinearGradient(0, HZ + 10, 0, HZ + 70); fog.addColorStop(0, 'rgba(255,226,196,.85)'); fog.addColorStop(1, 'rgba(255,226,196,0)');
+    c.fillStyle = fog; c.fillRect(0, HZ + 10, W, 60);
+    // scenery and obstacles, far to near
+    this.trees.slice().sort((a, b) => b.z - a.z).forEach((t) => { if (t.z >= 0) this.drawTree(c, t); });
     const sorted = this.things.slice().sort((a, b) => b.z - a.z);
     sorted.filter((t) => t.z >= 20).forEach((t) => this.drawThing(c, t));
-    this.drawPlayer(c);
+    this.spray.forEach((s) => { c.fillStyle = `rgba(255,255,255,${Math.min(1, s.life * 2)})`; c.beginPath(); c.arc(s.x, s.y, s.r, 0, 7); c.fill(); });
+    if (this.mode !== 'caught' || this.caughtT < 0.5) this.drawPlayer(c);
     sorted.filter((t) => t.z < 20 && t.z > -this.F * 0.55).forEach((t) => this.drawThing(c, t));
-    if (this.flash > 0) { c.fillStyle = `rgba(255,80,60,${this.flash})`; c.fillRect(0, 0, W, H); this.flash = Math.max(0, this.flash - 0.02); }
+    this.trees.forEach((t) => { if (t.z < 0) this.drawTree(c, t); });
+    // falling snow
+    c.fillStyle = 'rgba(255,255,255,.85)';
+    this.flakes.forEach((f) => { c.beginPath(); c.arc(f.x, f.y, f.r, 0, 7); c.fill(); });
+    // the avalanche chasing you
+    this.drawAvalanche(c, this.mode === 'ready' ? 0.25 : this.aval);
+    if (this.flash > 0) { c.fillStyle = `rgba(255,255,255,${this.flash})`; c.fillRect(0, 0, W, H); this.flash = Math.max(0, this.flash - 0.02); }
+
     // HUD
-    gtext(c, String(this.score()), W / 2, 40, 30);
-    gtext(c, `⭐ ${this.stars}`, W - 12, 32, 16, '#ffd34d', 'right');
+    c.fillStyle = 'rgba(15,25,50,.35)'; c.beginPath(); c.roundRect(W / 2 - 60, 12, 120, 40, 12); c.fill();
+    gtext(c, String(this.score()), W / 2, 42, 26);
+    gtext(c, `💎 ${this.gems}`, 14, 34, 15, '#e8f7ff', 'left');
+    if (p.board > 0) {
+      gtext(c, '🏂', W - 14, 34, 18, '#fff', 'right');
+      c.fillStyle = 'rgba(15,25,50,.4)'; c.fillRect(W - 70, 42, 56, 6);
+      c.fillStyle = '#ffd34d'; c.fillRect(W - 70, 42, 56 * Math.min(1, p.board / 15), 6);
+    }
+    if (this.mode === 'play' && this.aval > 0.7) gtext(c, '⚠ AVALANCHE!', W / 2, 80, 16, '#d9473b');
+    if (this.msgT > 0 && this.mode === 'play') {
+      c.globalAlpha = Math.min(1, this.msgT); c.fillStyle = 'rgba(15,25,50,.55)'; c.beginPath(); c.roundRect(20, 92, W - 40, 32, 10); c.fill();
+      gtext(c, this.msg, W / 2, 113, 13, '#fff', 'center', 700); c.globalAlpha = 1;
+    }
     const b = arcade.best.get(this.key);
     if (this.mode === 'ready') {
-      dim(c, this);
-      gtext(c, 'Hall Pass', W / 2, 190, 32);
-      gtext(c, "You're late! Run the hallway and grab ⭐.", W / 2, 224, 14, '#c9c6bd', 'center', 600);
-      gtext(c, '← → switch lanes  ·  ↑ jump  ·  ↓ slide', W / 2, 254, 13, '#c9c6bd', 'center', 600);
-      gtext(c, 'On a phone: swipe in any direction', W / 2, 276, 13, '#c9c6bd', 'center', 600);
-      gtext(c, 'Tap or press any arrow to start', W / 2, 318, 15, '#fff');
-      gtext(c, `Best: ${b}`, W / 2, 350, 14, '#c9c6bd', 'center', 600);
+      c.fillStyle = 'rgba(10,20,45,.55)'; c.fillRect(0, 0, W, H);
+      gtext(c, 'Peak Rush', W / 2, 170, 34);
+      gtext(c, 'An avalanche is coming down the mountain!', W / 2, 204, 13, '#e2e8f5', 'center', 600);
+      gtext(c, '← → lanes  ·  ↑ jump logs  ·  ↓ slide under branches', W / 2, 236, 12, '#e2e8f5', 'center', 600);
+      gtext(c, 'Dodge boulders. Grab 💎 for points.', W / 2, 258, 12, '#e2e8f5', 'center', 600);
+      gtext(c, 'Find a 🏂 board: it saves you from one crash.', W / 2, 280, 12, '#e2e8f5', 'center', 600);
+      gtext(c, 'Caught? Solve a brain teaser for one more try.', W / 2, 302, 12, '#e2e8f5', 'center', 600);
+      gtext(c, 'Tap or press any arrow to start', W / 2, 346, 15, '#fff');
+      gtext(c, `Best: ${b}`, W / 2, 376, 14, '#e2e8f5', 'center', 600);
     }
+    if (this.mode === 'teaser') this.drawTeaser(c);
     if (this.mode === 'over') {
-      dim(c, this);
-      gtext(c, this.newBest ? 'New best! 🎉' : 'Detention!', W / 2, 220, 28);
-      gtext(c, `Score ${this.score()}  ·  Best ${b}`, W / 2, 256, 17, '#c9c6bd', 'center', 600);
-      gtext(c, 'Tap or press Space to run again', W / 2, 292, 14, '#c9c6bd', 'center', 600);
-    }
+      c.fillStyle = 'rgba(10,20,45,.6)'; c.fillRect(0, 0, W, H);
+      gtext(c, this.newBest ? 'New best! 🎉' : 'Buried in snow!', W / 2, 210, 28);
+      if (this.overNote) gtext(c, this.overNote, W / 2, 240, 13, '#ffd34d', 'center', 600);
+      gtext(c, `Score ${this.score()}  ·  Best ${b}`, W / 2, 270, 17, '#e2e8f5', 'center', 600);
+      gtext(c, 'Tap or press Space to run again', W / 2, 306, 14, '#e2e8f5', 'center', 600);
+    } else this.overNote = '';
+  },
+  drawTeaser(c) {
+    const { W, H } = this, tz = this.teaser;
+    c.fillStyle = 'rgba(10,20,45,.72)'; c.fillRect(0, 0, W, H);
+    c.fillStyle = '#fbfcff'; c.beginPath(); c.roundRect(18, 110, W - 36, 340, 18); c.fill();
+    gtext(c, '🧠 Brain teaser for another life', W / 2, 146, 15, '#1d3a6e');
+    // wrap the question
+    c.font = '700 16px Inter, system-ui, sans-serif'; c.fillStyle = '#1d1c1a'; c.textAlign = 'center';
+    const words = tz.q.split(' '); let line = '', y = 184;
+    words.forEach((w) => { const test = line ? line + ' ' + w : w; if (c.measureText(test).width > W - 76) { c.fillText(line, W / 2, y); y += 22; line = w; } else line = test; });
+    c.fillText(line, W / 2, y);
+    tz.boxes = tz.opts.map((o, i) => ({ x: 40, y: Math.max(y + 22, 260) + i * 54, w: W - 80, h: 44 }));
+    tz.boxes.forEach((bx, i) => {
+      c.fillStyle = '#e9eefb'; c.beginPath(); c.roundRect(bx.x, bx.y, bx.w, bx.h, 12); c.fill();
+      gtext(c, `${i + 1}`, bx.x + 22, bx.y + 28, 15, '#7c9bff');
+      gtext(c, tz.opts[i], W / 2 + 8, bx.y + 28, 16, '#1d1c1a');
+    });
+    c.fillStyle = '#e9eefb'; c.fillRect(40, 430, W - 80, 6);
+    c.fillStyle = tz.t < 5 ? '#d9473b' : '#7c9bff'; c.fillRect(40, 430, (W - 80) * Math.max(0, tz.t / 15), 6);
   },
 };
 
