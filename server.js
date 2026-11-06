@@ -550,4 +550,128 @@ function decodeEntities(s) {
     .replace(/&#0?39;/g, "'");
 }
 
-app.listen(PORT, () => console.log(`DueBoard running at ${BASE_URL}`));
+const server = app.listen(PORT, () => console.log(`DueBoard running at ${BASE_URL}`));
+
+/* ---------------------------------------------------------------------
+   Last One Standing — party relay for playing with a friend.
+   A tiny WebSocket server (no extra packages): one player creates a party
+   and gets a 4-letter code, a friend joins with the code, and every game
+   message is passed straight from one browser to the other.
+   --------------------------------------------------------------------- */
+const rooms = new Map(); // code -> { host, guest }
+const wsClients = new Set();
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+
+function wsFrame(op, data) {
+  const len = data.length;
+  let head;
+  if (len < 126) head = Buffer.from([0x80 | op, len]);
+  else if (len < 65536) { head = Buffer.alloc(4); head[0] = 0x80 | op; head[1] = 126; head.writeUInt16BE(len, 2); }
+  else { head = Buffer.alloc(10); head[0] = 0x80 | op; head[1] = 127; head.writeBigUInt64BE(BigInt(len), 2); }
+  return Buffer.concat([head, data]);
+}
+
+function partyCode() {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  for (let k = 0; k < 50; k++) {
+    let c = '';
+    for (let i = 0; i < 4; i++) c += A[crypto.randomInt(A.length)];
+    if (!rooms.has(c)) return c;
+  }
+  return null;
+}
+
+function leaveRoom(c) {
+  const r = c.room && rooms.get(c.room);
+  if (r) {
+    if (r.host === c) {
+      rooms.delete(c.room);
+      if (r.guest) { r.guest.room = null; r.guest.sendJSON({ t: 'peerLeft', host: true }); }
+    } else if (r.guest === c) {
+      r.guest = null;
+      r.host.sendJSON({ t: 'peerLeft' });
+    }
+  }
+  c.room = null; c.role = null;
+}
+
+function wsMessage(c, text) {
+  let m;
+  try { m = JSON.parse(text); } catch { return; }
+  if (!m || typeof m.t !== 'string') return;
+  if (m.t === 'create') {
+    leaveRoom(c);
+    if (rooms.size > 500) return c.sendJSON({ t: 'err', msg: 'Too many parties right now — try again soon.' });
+    const code = partyCode();
+    if (!code) return c.sendJSON({ t: 'err', msg: 'Could not make a party code — try again.' });
+    rooms.set(code, { host: c, guest: null });
+    c.room = code; c.role = 'host';
+    return c.sendJSON({ t: 'created', code });
+  }
+  if (m.t === 'join') {
+    const code = String(m.code || '').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
+    const r = rooms.get(code);
+    if (!r) return c.sendJSON({ t: 'err', msg: `No party with code ${code || '????'} — check the letters.` });
+    if (r.host === c) return c.sendJSON({ t: 'err', msg: "That's your own party code." });
+    if (r.guest && r.guest !== c) return c.sendJSON({ t: 'err', msg: 'That party is already full (2 players).' });
+    leaveRoom(c);
+    r.guest = c; c.room = code; c.role = 'guest';
+    c.sendJSON({ t: 'joined', code });
+    return r.host.sendJSON({ t: 'peer' });
+  }
+  if (m.t === 'leave') return leaveRoom(c);
+  if (m.t === 'ping') return c.sendJSON({ t: 'pong' });
+  // everything else is game data for the other player
+  const r = c.room && rooms.get(c.room);
+  const other = r && (r.host === c ? r.guest : r.host);
+  if (!other) return;
+  // if the friend's connection is backed up, skip the frequent position updates (newer ones are coming)
+  if ((m.t === 'snap' || m.t === 'st') && other.socket.writableLength > 512 * 1024) return;
+  other.sendRaw(text);
+}
+
+server.on('upgrade', (req, socket, head) => {
+  if (String(req.url || '').split('?')[0] !== '/ws/royale' || !req.headers['sec-websocket-key']) { socket.destroy(); return; }
+  const accept = crypto.createHash('sha1').update(req.headers['sec-websocket-key'] + WS_GUID).digest('base64');
+  socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + '\r\n\r\n');
+  socket.setNoDelay(true);
+  const c = { socket, buf: head && head.length ? Buffer.from(head) : Buffer.alloc(0), frags: [], room: null, role: null, alive: true, closed: false };
+  c.sendRaw = (text) => { if (!c.closed && !socket.destroyed) socket.write(wsFrame(1, Buffer.from(text, 'utf8'))); };
+  c.sendJSON = (obj) => c.sendRaw(JSON.stringify(obj));
+  const close = () => { if (c.closed) return; c.closed = true; wsClients.delete(c); leaveRoom(c); socket.destroy(); };
+  wsClients.add(c);
+  const parse = () => {
+    while (c.buf.length >= 2) {
+      const b0 = c.buf[0], b1 = c.buf[1], fin = (b0 & 0x80) !== 0, op = b0 & 0x0f, masked = (b1 & 0x80) !== 0;
+      let len = b1 & 0x7f, off = 2;
+      if (len === 126) { if (c.buf.length < 4) return; len = c.buf.readUInt16BE(2); off = 4; }
+      else if (len === 127) { if (c.buf.length < 10) return; len = Number(c.buf.readBigUInt64BE(2)); off = 10; }
+      if (len > 2 * 1024 * 1024) return close();
+      const maskAt = off; if (masked) off += 4;
+      if (c.buf.length < off + len) return;
+      let data = Buffer.from(c.buf.subarray(off, off + len));
+      if (masked) for (let i = 0; i < data.length; i++) data[i] ^= c.buf[maskAt + (i & 3)];
+      c.buf = c.buf.subarray(off + len);
+      if (op === 8) return close();
+      if (op === 9) { socket.write(wsFrame(10, data)); continue; }
+      if (op === 10) { c.alive = true; continue; }
+      if (op === 1 || op === 0) {
+        c.frags.push(data);
+        if (fin) { const text = Buffer.concat(c.frags).toString('utf8'); c.frags = []; c.alive = true; wsMessage(c, text); }
+      }
+    }
+  };
+  socket.on('data', (d) => { c.buf = c.buf.length ? Buffer.concat([c.buf, d]) : d; parse(); });
+  socket.on('close', close);
+  socket.on('error', close);
+  if (c.buf.length) parse();
+});
+
+// keep connections alive through proxies, and drop dead ones
+setInterval(() => {
+  for (const c of wsClients) {
+    if (!c.alive) { c.socket.destroy(); continue; }
+    c.alive = false;
+    if (!c.socket.destroyed) c.socket.write(wsFrame(9, Buffer.alloc(0)));
+  }
+}, 25000).unref();
