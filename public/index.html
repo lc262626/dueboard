@@ -142,7 +142,14 @@
   #game { display: block; width: 100%; border-radius: 10px; touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
   #game[hidden], #game-menu[hidden], #game-back[hidden] { display: none; }
   .game-box { width: min(420px, 100%); }
-  .game-top-left { display: flex; gap: 8px; align-items: center; }
+  .game-top-left, .game-top-right { display: flex; gap: 8px; align-items: center; }
+  #game-fs[hidden] { display: none; }
+  .game-overlay.fs { padding: 0; background: #000; }
+  .game-box.fs { width: 100vw !important; height: 100vh; height: 100dvh; max-width: none; border: 0; border-radius: 0; padding: 0; background: #000; display: flex; flex-direction: column; }
+  .game-box.fs .game-top { margin: 0; padding: 6px 10px; background: var(--surface); }
+  .game-box.fs .game-hint { display: none; }
+  .game-box.fs #game-menu { padding: 16px; background: var(--surface); flex: 1; align-content: start; }
+  .game-box.fs #game { border-radius: 0; margin: auto; }
   #game-menu { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
   .game-tile { flex-direction: column; align-items: flex-start; gap: 2px; padding: 14px; text-align: left; border-radius: 12px; background: var(--surface-2); }
   .game-tile span { font-size: 28px; line-height: 1.2; }
@@ -237,7 +244,7 @@
   <div class="game-box" id="game-box" role="dialog" aria-label="Secret arcade">
     <div class="game-top">
       <div class="game-top-left"><button id="game-back" hidden aria-label="Back to games">←</button><b id="game-title">🎮 Secret arcade</b><span id="cheat-badge" hidden style="font-size:12px;font-weight:700;padding:2px 8px;border-radius:99px;background:#ffd34d;color:#1d1c1a">😎 Cheats on</span></div>
-      <button id="game-close" aria-label="Close">✕</button>
+      <div class="game-top-right"><button id="game-fs" hidden aria-label="Full screen" title="Full screen">⛶ Full screen</button><button id="game-close" aria-label="Close">✕</button></div>
     </div>
     <div id="game-menu"></div>
     <canvas id="game" hidden></canvas>
@@ -632,7 +639,7 @@ const arcade = (() => {
   function showMenu() {
     if (document.pointerLockElement) document.exitPointerLock();
     cancelAnimationFrame(raf); cur = null; keys.clear();
-    canvas.hidden = true; menu.hidden = false; backBtn.hidden = true;
+    canvas.hidden = true; menu.hidden = false; backBtn.hidden = true; fsBtn.hidden = true;
     box.style.width = '';
     titleEl.textContent = '🎮 Secret arcade';
     hintEl.textContent = 'Pick a game · Esc to close';
@@ -647,12 +654,10 @@ const arcade = (() => {
     titleEl.textContent = `${g.icon} ${g.title}`;
     hintEl.textContent = g.hint;
     // Fit the game on screen: as wide as possible without being taller than the window.
-    box.style.width = `min(${g.maxW || 420}px, 100%, calc((100vh - 120px) * ${g.W / g.H} + 24px))`;
-    const r = window.devicePixelRatio || 1;
-    canvas.width = g.W * r; canvas.height = g.H * r;
-    canvas.style.aspectRatio = `${g.W} / ${g.H}`;
-    ctx.setTransform(r, 0, 0, r, 0, 0);
+    if (g.baseW == null) { g.baseW = g.W; g.baseH = g.H; }
+    fsBtn.hidden = false;
     g.reset();
+    fit();
     lastT = 0; raf = requestAnimationFrame(loop);
   }
 
@@ -663,8 +668,66 @@ const arcade = (() => {
     raf = requestAnimationFrame(loop);
   }
 
+  /* ---------- full screen ---------- */
+  const fsBtn = $('game-fs');
+  // Games that can redraw at any size (the rest are scaled up, keeping their shape).
+  const RESIZE = {
+    royale(g) {
+      if (!g.renderer) return;  // world not built yet: it will be built at the new size
+      g.applyGfx();
+      for (const cam of [g.cam, g.lobby && g.lobby.cam]) if (cam) { cam.aspect = g.W / g.H; cam.updateProjectionMatrix(); }
+    },
+  };
+  let fakeFs = false;  // phones without the Fullscreen API get a "fill the window" mode instead
+  const realFs = () => !!(document.fullscreenElement || document.webkitFullscreenElement);
+  const isFs = () => realFs() || fakeFs;
+  // Size the canvas: normal = the old fixed-size box; full screen = fill the screen.
+  function fit() {
+    const fs = isFs();
+    box.classList.toggle('fs', fs); overlay.classList.toggle('fs', fs);
+    const g = cur; if (!g) return;
+    fsBtn.textContent = fs ? '✕ Exit full screen' : '⛶ Full screen';
+    let r = window.devicePixelRatio || 1;
+    let cssW = null, cssH = null;
+    if (fs) {
+      const top = box.querySelector('.game-top').offsetHeight;
+      const aw = window.innerWidth, ah = window.innerHeight - top;
+      if (RESIZE[g.key]) {
+        // The game redraws at the new size (capped so slower computers stay smooth).
+        const k = Math.min(1, Math.sqrt((1600 * 1000) / (aw * ah)));
+        g.W = Math.round(aw * k); g.H = Math.round(ah * k);
+        cssW = aw; cssH = ah;
+      } else {
+        g.W = g.baseW; g.H = g.baseH;
+        const sc = Math.min(aw / g.W, ah / g.H); cssW = Math.floor(g.W * sc); cssH = Math.floor(g.H * sc);
+        r *= Math.max(1, sc);  // draw the small games at full detail so they stay sharp
+      }
+    } else { g.W = g.baseW; g.H = g.baseH; }
+    box.style.width = fs ? '' : `min(${g.maxW || 420}px, 100%, calc((100vh - 120px) * ${g.W / g.H} + 24px))`;
+    canvas.width = Math.round(g.W * r); canvas.height = Math.round(g.H * r);
+    canvas.style.aspectRatio = fs ? '' : `${g.W} / ${g.H}`;
+    canvas.style.width = cssW ? cssW + 'px' : ''; canvas.style.height = cssH ? cssH + 'px' : '';
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+    RESIZE[g.key] && RESIZE[g.key](g);
+  }
+  function toggleFs() {
+    if (isFs()) {
+      fakeFs = false;
+      if (realFs()) { const pr = (document.exitFullscreen || document.webkitExitFullscreen).call(document); if (pr && pr.then) pr.then(fit, fit); }
+      fit(); setTimeout(fit, 300); return;
+    }
+    const req = box.requestFullscreen || box.webkitRequestFullscreen;
+    if (req) { try { const pr = req.call(box); if (pr && pr.then) pr.then(fit, () => { fakeFs = true; fit(); }); else setTimeout(fit, 300); } catch { fakeFs = true; fit(); } }
+    else { fakeFs = true; fit(); }
+  }
+  fsBtn.onclick = toggleFs;
+  document.addEventListener('fullscreenchange', () => { if (!realFs()) fakeFs = false; setTimeout(fit, 50); });
+  document.addEventListener('webkitfullscreenchange', () => setTimeout(fit, 50));
+  window.addEventListener('resize', () => { if (cur && isFs()) fit(); });
+  function leaveFs() { fakeFs = false; if (realFs()) (document.exitFullscreen || document.webkitExitFullscreen).call(document); box.classList.remove('fs'); overlay.classList.remove('fs'); }
+
   function open() { if (!overlay.hidden) return; overlay.hidden = false; showMenu(); }
-  function close() { if (document.pointerLockElement) document.exitPointerLock(); overlay.hidden = true; cancelAnimationFrame(raf); cur = null; keys.clear(); }
+  function close() { if (document.pointerLockElement) document.exitPointerLock(); leaveFs(); overlay.hidden = true; cancelAnimationFrame(raf); cur = null; keys.clear(); }
 
   function toGame(e) {
     const r = canvas.getBoundingClientRect();
@@ -695,7 +758,7 @@ const arcade = (() => {
 
   document.addEventListener('keydown', (e) => {
     if (overlay.hidden) return;
-    if (e.key === 'Escape') { cur ? showMenu() : close(); return; }
+    if (e.key === 'Escape') { if (fakeFs) { fakeFs = false; fit(); return; } cur ? showMenu() : close(); return; }
     if (!cur) return;
     if (DIRS[e.code] || e.code === 'Space') e.preventDefault();
     if (!e.repeat) cur.keydown && cur.keydown(e.code, DIRS[e.code]);
