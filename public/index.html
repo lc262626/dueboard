@@ -267,7 +267,10 @@ const state = { status: null, items: [], loading: false, demo: false, source: 'a
 function loadDone() { try { return new Set(JSON.parse(localStorage.getItem('dueboard-done') || '[]')); } catch { return new Set(); } }
 function saveDone(set) { try { localStorage.setItem('dueboard-done', JSON.stringify([...set])); } catch {} }
 let doneSet = loadDone();
-const isDone = (it) => it.submitted || doneSet.has(it.id);
+// assignments you removed from your list (per browser); they count as done everywhere and stay hidden
+let removedSet = (() => { try { return new Set(JSON.parse(localStorage.getItem('dueboard-removed') || '[]')); } catch { return new Set(); } })();
+const saveRemoved = () => { try { localStorage.setItem('dueboard-removed', JSON.stringify([...removedSet].slice(-1000))); } catch {} };
+const isDone = (it) => it.submitted || doneSet.has(it.id) || removedSet.has(it.id);
 
 /* ---------- helpers ---------- */
 const $ = (id) => document.getElementById(id);
@@ -450,6 +453,7 @@ function filtered() {
   const q = state.search.toLowerCase();
   return state.items
     .filter((i) => state.source === 'all' || i.source === state.source)
+    .filter((i) => !removedSet.has(i.id))
     .filter((i) => state.showDone || !isDone(i))
     .filter((i) => !q || (i.title + ' ' + i.course).toLowerCase().includes(q))
     .sort((a, b) => (a.due ? new Date(a.due) : Infinity) - (b.due ? new Date(b.due) : Infinity));
@@ -548,18 +552,31 @@ function renderList() {
   if (!state.status.google && !state.status.moodle && !state.status.canvas && !state.status.blackboard) { el.innerHTML = `<div class="empty">Connect an account above to see your assignments.</div>`; return; }
   const items = filtered();
   if (state.view !== 'list') return renderCalendar(el, items);
-  if (!items.length) { el.innerHTML = `<div class="empty">Nothing here — you're all caught up. 🎉</div>`; return; }
+  if (!items.length) { el.innerHTML = `<div class="empty">Nothing here — you're all caught up. 🎉</div>`; rmFooter(el); return; }
   const groups = {};
   items.forEach((i) => (groups[bucket(i)] ||= []).push(i));
   el.innerHTML = ORDER.filter((g) => groups[g]).map((g) => `
     <section class="group ${g === 'Overdue' ? 'overdue' : ''}">
-      <h3>${g} · ${groups[g].length}</h3>
+      <h3>${g} · ${groups[g].length}${g === 'Overdue' ? ' <button class="link rm-all" style="margin-left:10px;font-size:13px" title="Remove every overdue assignment from your list">🗑 Remove all overdue</button>' : ''}</h3>
       ${groups[g].map(itemHTML).join('')}
     </section>`).join('');
   el.querySelectorAll('input[data-id]').forEach((cb) => cb.onchange = () => {
     cb.checked ? doneSet.add(cb.dataset.id) : doneSet.delete(cb.dataset.id);
     saveDone(doneSet); renderStats(); renderList();
   });
+  el.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { removedSet.add(b.dataset.rm); saveRemoved(); renderStats(); renderList(); });
+  const all = el.querySelector('.rm-all');
+  if (all) all.onclick = () => {
+    const od = state.items.filter((i) => i.due && new Date(i.due) < new Date() && !isDone(i));
+    if (!od.length || !confirm(`Remove all ${od.length} overdue assignment${od.length === 1 ? '' : 's'} from your list?\n\nYou can bring them back at the bottom of the list.`)) return;
+    od.forEach((i) => removedSet.add(i.id)); saveRemoved(); renderStats(); renderList();
+  };
+  rmFooter(el);
+}
+function rmFooter(el) {
+  const n = state.items.filter((i) => removedSet.has(i.id)).length; if (!n) return;
+  el.insertAdjacentHTML('beforeend', `<div class="empty" style="padding:12px">${n} removed assignment${n === 1 ? '' : 's'} hidden · <button class="link" id="rm-undo">Bring them back</button></div>`);
+  $('rm-undo').onclick = () => { state.items.forEach((i) => removedSet.delete(i.id)); saveRemoved(); renderStats(); renderList(); };
 }
 
 function itemHTML(it) {
@@ -571,7 +588,7 @@ function itemHTML(it) {
       <a class="title" href="${esc(it.url)}" target="_blank" rel="noopener">${esc(it.title)}</a>
       <div class="meta"><span class="dot ${it.source}"></span>${esc(it.course)}<span class="tag">${esc(it.type)}</span>${it.submitted ? '<span class="tag">turned in</span>' : ''}</div>
     </div>
-    <div class="due ${cls}"><b>${d.main}</b>${d.sub}</div>
+    <div class="due ${cls}"><b>${d.main}</b>${d.sub}${b === 'Overdue' && !done ? `<button class="link" data-rm="${esc(it.id)}" style="display:block;margin:4px 0 0 auto;font-size:12px" title="Remove this from your list">✕ Remove</button>` : ''}</div>
     ${turnInButton(it)}
   </div>`;
 }
