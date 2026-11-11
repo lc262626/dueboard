@@ -775,6 +775,7 @@ const arcade = (() => {
   function toggleCheat() {
     arcade.cheat = !arcade.cheat;
     $('cheat-badge').hidden = !arcade.cheat;
+    try { localStorage.setItem('dueboard-cheat', arcade.cheat ? '1' : '0'); } catch {}  // cheats stay on after a reload
   }
   document.addEventListener('keydown', (e) => {
     if (overlay.hidden || e.key.length !== 1) return;
@@ -787,6 +788,7 @@ const arcade = (() => {
     if (cheatTaps.length >= 5) { cheatTaps = []; toggleCheat(); }
   });
 
+  try { if (localStorage.getItem('dueboard-cheat') === '1') setTimeout(() => { arcade.cheat = true; $('cheat-badge').hidden = false; }, 0); } catch {}
   return { open, GAMES, best, keys, cheat: false };
 })();
 
