@@ -49,6 +49,13 @@
   .seg button[aria-pressed=true] { background: var(--text); color: var(--bg); }
   label.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 14px; cursor: pointer; }
 
+  .habit { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 12px; }
+  .habit .streak { display: flex; gap: 10px; align-items: center; flex: 1 1 260px; }
+  .habit .flame { font-size: 30px; line-height: 1; }
+  .habit .sub, .habit .muted { color: var(--muted); font-size: 13px; }
+  .habit .small { font-size: 12px; margin-top: 4px; }
+  .habit .rem { flex: 1 1 280px; font-size: 14px; }
+  .habit .rem input[type=time] { font: inherit; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px; }
   .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
   .stat b { display: block; font-size: 22px; }
@@ -200,6 +207,7 @@
     </div>
   </section>
 
+  <section id="habit" class="habit" hidden></section>
   <section id="stats" class="stats"></section>
 
   <div class="toolbar">
@@ -325,7 +333,7 @@ async function loadAssignments() {
   }
   const results = await Promise.all(jobs);
   state.items = results.flatMap((r) => r.items);
-  state.loading = false;
+  state.loading = false; state.loadedOnce = true;
   renderAll();
 }
 
@@ -456,7 +464,83 @@ function renderStats() {
   $('stats').innerHTML = [
     [overdue, 'Overdue'], [today, 'Due today'], [week, 'Next 7 days'], [open.length, 'Open total'],
   ].map(([n, l]) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`).join('');
+  updateStreak(); renderHabit(); reminderTick();
 }
+/* ---------- 🔥 homework streak + 🔔 reminders ---------- */
+const HB = {
+  get(k, d) { try { const v = localStorage.getItem('dueboard-' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('dueboard-' + k, JSON.stringify(v)); } catch {} },
+};
+const dayKey = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const prevDay = (k) => { const [y, m, d] = k.split('-').map(Number); return dayKey(new Date(y, m - 1, d - 1)); };
+const connectedAny = () => { const s = state.status; return !!(s && (s.google || s.moodle || Object.keys(FEED_SITES).some((k) => s[k]))); };
+let habitMsg = '';
+function openCounts() {
+  const open = state.items.filter((i) => !isDone(i)), now = new Date();
+  return { overdue: open.filter((i) => i.due && new Date(i.due) < now), today: open.filter((i) => i.due && new Date(i.due) >= now && bucket(i) === 'Today') };
+}
+// streak = days in a row you opened DueBoard and had nothing overdue
+function streakInfo() {
+  const days = new Set(HB.get('clear-days', [])); let n = 0, k = dayKey();
+  const todayClear = days.has(k); if (!todayClear) k = prevDay(k);
+  while (days.has(k)) { n++; k = prevDay(k); }
+  return { n, todayClear };
+}
+function updateStreak() {
+  if (state.demo || state.loading || !state.loadedOnce || state.errors.length || !connectedAny()) return;
+  const today = dayKey(), days = HB.get('clear-days', []);
+  if (openCounts().overdue.length || days.includes(today)) return;
+  days.push(today); HB.set('clear-days', days.slice(-400));
+  const { n } = streakInfo(), coins = Math.min(100, 20 + 10 * n);  // streak days pay coins for Last One Standing's item shop
+  try { localStorage.setItem('los-coins', String((parseInt(localStorage.getItem('los-coins') || '0', 10) || 0) + coins)); } catch {}
+  habitMsg = `Day ${n} kept! +${coins} 🪙 coins for the Last One Standing item shop`;
+}
+function renderHabit() {
+  const el = $('habit'); if (!el) return;
+  if (state.demo || !connectedAny()) { el.hidden = true; return; }
+  el.hidden = false;
+  const s = streakInfo(), c = openCounts(), rem = HB.get('remind', null), canNote = 'Notification' in window;
+  const best = Math.max(HB.get('best-streak', 0), s.n); HB.set('best-streak', best);
+  let sub;
+  if (state.loading) sub = 'Checking your classes…';
+  else if (c.overdue.length) sub = `Finish your ${c.overdue.length} overdue assignment${c.overdue.length === 1 ? '' : 's'} today to ${s.n ? 'keep your streak going' : 'start a streak'}!`;
+  else sub = habitMsg || (s.todayClear ? 'Nothing overdue today. Come back tomorrow to keep it going!' : 'Nothing overdue!');
+  const remOn = rem && rem.on && canNote && Notification.permission === 'granted';
+  const remHtml = !canNote ? '<span class="muted">This browser can’t show reminders.</span>'
+    : remOn ? `<span>🔔 Every day at <input type="time" id="rem-time" value="${rem.time || '07:30'}"> + an alert 1 hour before anything is due</span> <button class="link" id="rem-off">Turn off</button>`
+    : Notification.permission === 'denied' ? '<span class="muted">🔕 Reminders are blocked. Allow notifications for this site in your browser settings, then refresh.</span>'
+    : '<button id="rem-on">🔔 Turn on reminders</button> <span class="muted">A daily “what’s due” message + an alert 1 hour before each deadline</span>';
+  el.innerHTML = `<div class="streak"><div class="flame">${s.n ? '🔥' : '🪵'}</div><div><b>${s.n} day${s.n === 1 ? '' : 's'} streak</b> <span class="muted">· best ${best}</span><div class="sub">${sub}</div></div></div>
+  <div class="today"><b>Today:</b> ${c.today.length} due · ${c.overdue.length} overdue</div>
+  <div class="rem">${remHtml}${remOn ? '<div class="muted small">Reminders show while DueBoard is open in a browser tab (it can stay in the background).</div>' : ''}</div>`;
+  const on = $('rem-on'); if (on) on.onclick = async () => { const p = await Notification.requestPermission(); if (p === 'granted') { HB.set('remind', { on: true, time: '07:30' }); notify('🔔 Reminders are on!', 'DueBoard will tell you what’s due every day, and 1 hour before each deadline.'); } renderHabit(); };
+  const off = $('rem-off'); if (off) off.onclick = () => { HB.set('remind', { on: false, time: (rem && rem.time) || '07:30' }); renderHabit(); };
+  const tm = $('rem-time'); if (tm) tm.onchange = () => { HB.set('remind', { on: true, time: tm.value || '07:30' }); HB.set('last-summary', ''); };
+}
+function notify(title, body) { try { const n = new Notification(title, { body, tag: 'dueboard-' + title }); n.onclick = () => { window.focus(); n.close(); }; } catch {} }
+function reminderTick() {
+  const rem = HB.get('remind', null);
+  if (state.demo || state.loading || !state.loadedOnce || !rem || !rem.on || !('Notification' in window) || Notification.permission !== 'granted') return;
+  const now = new Date(), [h, m] = (rem.time || '07:30').split(':').map(Number), today = dayKey();
+  const c = openCounts();
+  if (now.getHours() * 60 + now.getMinutes() >= h * 60 + m && HB.get('last-summary', '') !== today) {
+    HB.set('last-summary', today);
+    const list = c.overdue.concat(c.today).slice(0, 3).map((i) => '• ' + i.title).join('\n');
+    const s = streakInfo();
+    notify(`📚 ${c.today.length} due today · ${c.overdue.length} overdue`, (list || 'Nothing due today 🎉') + (s.n ? `\n🔥 ${s.n} day streak, don't break it!` : ''));
+  }
+  const sent = new Set(HB.get('alerted', []));
+  for (const i of state.items) {
+    if (isDone(i) || !i.due) continue;
+    const mins = (new Date(i.due) - now) / 60000;
+    if (mins > 0 && mins <= 60 && !sent.has(i.id)) { sent.add(i.id); notify(`⏰ Due in ${Math.max(1, Math.round(mins))} min`, `${i.title}${i.course ? ' · ' + i.course : ''}`); }
+  }
+  HB.set('alerted', [...sent].slice(-300));
+}
+setInterval(reminderTick, 60 * 1000);
+setInterval(() => { if (!state.demo && !state.loading && connectedAny()) loadAssignments(); }, 30 * 60 * 1000);  // stay up to date for reminders
+setInterval(() => { if (dayKey() !== renderHabit.day) { renderHabit.day = dayKey(); habitMsg = ''; updateStreak(); renderHabit(); } }, 5 * 60 * 1000);
+
 
 function renderList() {
   const el = $('list');
