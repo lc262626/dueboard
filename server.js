@@ -1,38 +1,70 @@
 require('dotenv').config();
 const express = require('express');
-const session = require('express-session');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 
-/* Saves logins to a file next to this one, so you stay connected after a restart. */
-const SESSIONS_FILE = path.join(__dirname, 'sessions.json');
-class FileStore extends session.Store {
-  constructor() {
-    super();
-    try { this.data = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')); } catch { this.data = {}; }
-  }
-  save() {
-    try { fs.writeFileSync(SESSIONS_FILE, JSON.stringify(this.data), { mode: 0o600 }); } catch (e) { console.error('Could not save sessions:', e.message); }
-  }
-  get(sid, cb) {
-    const s = this.data[sid];
-    if (s && s.cookie?.expires && new Date(s.cookie.expires) < new Date()) { delete this.data[sid]; this.save(); return cb(null, null); }
-    cb(null, s || null);
-  }
-  set(sid, sess, cb) { this.data[sid] = sess; this.save(); cb && cb(null); }
-  destroy(sid, cb) { delete this.data[sid]; this.save(); cb && cb(null); }
-  touch(sid, sess, cb) { if (this.data[sid]) { this.data[sid].cookie = sess.cookie; this.save(); } cb && cb(null); }
-}
+/* Logins are kept in an encrypted cookie in your own browser (not in a file on the server).
+   Free hosting wipes the server's files whenever it sleeps or restarts, which used to log everyone out. */
+const SESSION_COOKIE = 'dueboard_session';
+const SESSION_DAYS = 365; // stays connected for a year after your last visit
 
 // A secret that stays the same between restarts (so the login cookie keeps working).
 function sessionSecret() {
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET !== 'change-me-to-a-long-random-string') return process.env.SESSION_SECRET;
+  // No SESSION_SECRET set: derive a stable one from the Google secret that is already set on the host.
+  if (process.env.GOOGLE_CLIENT_SECRET) return crypto.createHash('sha256').update('dueboard-session|' + (process.env.GOOGLE_CLIENT_ID || '') + '|' + process.env.GOOGLE_CLIENT_SECRET).digest('hex');
   const file = path.join(__dirname, '.session-secret');
   try { return fs.readFileSync(file, 'utf8').trim(); } catch {}
   const s = crypto.randomBytes(32).toString('hex');
   try { fs.writeFileSync(file, s, { mode: 0o600 }); } catch {}
   return s;
+}
+
+function cookieSessions({ secure }) {
+  const key = crypto.createHash('sha256').update('dueboard-cookie-session:' + sessionSecret()).digest();
+  const seal = (obj) => {
+    const iv = crypto.randomBytes(12), c = crypto.createCipheriv('aes-256-gcm', key, iv);
+    const data = Buffer.concat([c.update(JSON.stringify(obj), 'utf8'), c.final()]);
+    return Buffer.concat([iv, c.getAuthTag(), data]).toString('base64url');
+  };
+  const unseal = (str) => {
+    try {
+      const b = Buffer.from(str, 'base64url'), d = crypto.createDecipheriv('aes-256-gcm', key, b.subarray(0, 12));
+      d.setAuthTag(b.subarray(12, 28));
+      const v = JSON.parse(Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8'));
+      return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+    } catch { return null; }
+  };
+  const readCookie = (req) => {
+    for (const part of (req.headers.cookie || '').split(';')) {
+      const i = part.indexOf('='); if (i < 0) continue;
+      if (part.slice(0, i).trim() === SESSION_COOKIE) return part.slice(i + 1).trim();
+    }
+    return null;
+  };
+  const attrs = `Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
+  const addCookie = (res, c) => { const prev = res.getHeader('Set-Cookie'); res.setHeader('Set-Cookie', [].concat(prev || [], c)); };
+  return (req, res, next) => {
+    const raw = readCookie(req);
+    const sess = (raw && unseal(raw)) || {};
+    const before = JSON.stringify(sess);
+    req.session = sess;
+    const writeHead = res.writeHead;
+    res.writeHead = function (...args) {
+      try {
+        const s = req.session || {}, keys = Object.keys(s).filter((k) => k !== '_t');
+        if (!keys.length) { if (raw) addCookie(res, `${SESSION_COOKIE}=; Max-Age=0; ${attrs}`); }
+        else if (JSON.stringify(s) !== before || !s._t || Date.now() - s._t > 864e5) {
+          // save changes, and re-save about once a day so the year-long timer restarts every time you visit
+          s._t = Date.now();
+          addCookie(res, `${SESSION_COOKIE}=${seal(s)}; Max-Age=${SESSION_DAYS * 86400}; ${attrs}`);
+        }
+      } catch (e) { console.error('Could not save login cookie:', e.message); }
+      return writeHead.apply(this, args);
+    };
+    next();
+  };
 }
 
 const PORT = process.env.PORT || 3000;
@@ -49,20 +81,7 @@ const CLASSROOM = 'https://classroom.googleapis.com/v1';
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json());
-app.use(
-  session({
-    secret: sessionSecret(),
-    store: new FileStore(),
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: BASE_URL.startsWith('https'),
-      maxAge: 1000 * 60 * 60 * 24 * 30, // 30 days
-    },
-  })
-);
+app.use(cookieSessions({ secure: BASE_URL.startsWith('https') }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 /* ------------------------------------------------------------------ */
