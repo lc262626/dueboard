@@ -1681,5 +1681,45 @@ init();
 </script>
 <script src="royale.js"></script>
 <script src="titan.js?v=2"></script>
+<div id="dbm-btn" title="Music">🎵</div>
+<div id="dbm-panel" class="dbm-off">
+  <div class="dbm-head"><span id="dbm-title">Music</span><button id="dbm-hide" title="Hide (keeps playing)">–</button></div>
+  <div id="dbm-frame"></div>
+  <div class="dbm-row"><button id="dbm-play">▶ Play</button><button id="dbm-stop">■ Stop</button></div>
+  <div class="dbm-row"><input id="dbm-url" placeholder="YouTube link (blank = I'm The One)"><button id="dbm-set">Set</button></div>
+</div>
+<style>
+#dbm-btn{position:fixed;left:14px;bottom:14px;width:46px;height:46px;border-radius:50%;background:#1f1b3a;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2147483000;box-shadow:0 4px 14px rgba(0,0,0,.35);user-select:none}
+#dbm-btn.dbm-on{background:#7c3aed;animation:dbmPulse 1.6s ease-in-out infinite}
+@keyframes dbmPulse{50%{box-shadow:0 0 0 6px rgba(124,58,237,.3)}}
+#dbm-panel{position:fixed;left:14px;bottom:70px;width:280px;background:#15122b;color:#fff;border-radius:14px;padding:10px;z-index:2147483000;box-shadow:0 8px 28px rgba(0,0,0,.45);font:13px system-ui,sans-serif}
+#dbm-panel.dbm-off{left:-10000px}
+.dbm-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:700}
+#dbm-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+#dbm-frame{width:260px;height:146px;background:#000;border-radius:8px;overflow:hidden}
+#dbm-frame iframe{width:100%;height:100%;border:0}
+.dbm-row{display:flex;gap:6px;margin-top:8px}
+#dbm-panel button{background:#7c3aed;color:#fff;border:0;border-radius:8px;padding:6px 10px;cursor:pointer;font:600 13px system-ui,sans-serif}
+#dbm-hide{background:#2d2850!important;padding:2px 10px!important}
+#dbm-url{flex:1;min-width:0;border-radius:8px;border:1px solid #3b3566;background:#0d0b1d;color:#fff;padding:6px 8px}
+</style>
+<script>
+(function(){
+  var DEF={id:'weeI1G46q0o',title:"I'm The One — DJ Khaled"};
+  var cur=DEF;try{var s=JSON.parse(localStorage.getItem('dueboard-music')||'null');if(s&&/^[\w-]{11}$/.test(s.id))cur=s}catch(e){}
+  var $=function(i){return document.getElementById(i)};
+  var btn=$('dbm-btn'),panel=$('dbm-panel'),frame=$('dbm-frame'),title=$('dbm-title');
+  title.textContent='🎵 '+cur.title;
+  function play(){frame.innerHTML='<iframe src="https://www.youtube.com/embed/'+cur.id+'?autoplay=1&loop=1&playlist='+cur.id+'&rel=0" allow="autoplay; encrypted-media" title="Music player"></iframe>';btn.classList.add('dbm-on')}
+  function stop(){frame.innerHTML='';btn.classList.remove('dbm-on')}
+  function idFrom(u){var m=String(u).match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/)||String(u).trim().match(/^([\w-]{11})$/);return m&&m[1]}
+  btn.onclick=function(){var open=panel.classList.toggle('dbm-off')===false;if(open&&!frame.firstChild)play()};
+  $('dbm-hide').onclick=function(){panel.classList.add('dbm-off')};
+  $('dbm-play').onclick=play;$('dbm-stop').onclick=stop;
+  $('dbm-set').onclick=function(){if(!$('dbm-url').value.trim()){cur=DEF;try{localStorage.removeItem('dueboard-music')}catch(e){}title.textContent='🎵 '+DEF.title;play();return}var id=idFrom($('dbm-url').value);if(!id){$('dbm-url').value='';$('dbm-url').placeholder='That link didn’t work — try a youtube.com link';return}
+    cur={id:id,title:'Custom song'};try{localStorage.setItem('dueboard-music',JSON.stringify(cur))}catch(e){}title.textContent='🎵 Custom song';$('dbm-url').value='';play()};
+  ['keydown','keyup','keypress'].forEach(function(t){$('dbm-url').addEventListener(t,function(e){e.stopPropagation()})});
+})();
+</script>
 </body>
 </html>
