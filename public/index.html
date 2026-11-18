@@ -1716,11 +1716,11 @@ init();
   function idFrom(u){var m=String(u).match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/)||String(u).trim().match(/^([\w-]{11})$/);return m&&m[1]}
   btn.onclick=function(){var open=panel.classList.toggle('dbm-off')===false;if(open&&!frame.firstChild)play()};
   $('dbm-hide').onclick=function(){panel.classList.add('dbm-off')};
-  $('dbm-play').onclick=play;$('dbm-stop').onclick=stop;
+  $('dbm-play').onclick=play;$('dbm-stop').onclick=function(){setUn(false)};
   $('dbm-set').onclick=function(){if(!$('dbm-url').value.trim()){cur=DEF;try{localStorage.removeItem('dueboard-music')}catch(e){}title.textContent='🎵 '+DEF.title;play();return}var id=idFrom($('dbm-url').value);if(!id){$('dbm-url').value='';$('dbm-url').placeholder='That link didn’t work — try a youtube.com link';return}
     cur={id:id,title:'Custom song'};try{localStorage.setItem('dueboard-music',JSON.stringify(cur))}catch(e){}title.textContent='🎵 Custom song';$('dbm-url').value='';play()};
-  var un=false;try{un=localStorage.getItem('dueboard-music-on2')==='1'}catch(e){}
-  function setUn(v){un=v;btn.style.display=v?'flex':'none';if(!v){stop();panel.classList.add('dbm-off')}try{localStorage.setItem('dueboard-music-on2',v?'1':'0')}catch(e){}}
+  var un=false;try{localStorage.removeItem('dueboard-music-on2')}catch(e){}
+  function setUn(v){un=v;btn.style.display=v?'flex':'none';if(!v){stop();panel.classList.add('dbm-off')}}
   setUn(un);
   // Secret: type "khaled2" (or tap the DueBoard title 5 times on a phone) to show/hide the music player.
   var typed='',taps=[];document.addEventListener('keydown',function(e){var t=e.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return;if(!e.key||e.key.length!==1)return;typed=(typed+e.key.toLowerCase()).slice(-7);if(typed==='khaled2'){typed='';setUn(!un)}},true);
