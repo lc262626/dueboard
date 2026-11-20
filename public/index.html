@@ -1722,9 +1722,8 @@ init();
   var un=false;try{localStorage.removeItem('dueboard-music-on2')}catch(e){}
   function setUn(v){un=v;btn.style.display=v?'flex':'none';if(!v){stop();panel.classList.add('dbm-off')}}
   setUn(un);
-  // Secret: type "khaled2" (or tap the DueBoard title 5 times on a phone) to show/hide the music player.
+  // Secret: type "khaled2" to show the music player (it hides again on Stop or reload).
   var typed='',taps=[];document.addEventListener('keydown',function(e){var t=e.target;if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.isContentEditable))return;if(!e.key||e.key.length!==1)return;typed=(typed+e.key.toLowerCase()).slice(-7);if(typed==='khaled2'){typed='';setUn(!un)}},true);
-  var h1=document.querySelector('h1');h1&&h1.addEventListener('click',function(){var n=Date.now();taps=taps.filter(function(x){return n-x<2000}).concat(n);if(taps.length>=5){taps=[];setUn(!un)}});
   ['keydown','keyup','keypress'].forEach(function(t){$('dbm-url').addEventListener(t,function(e){e.stopPropagation()})});
 })();
 </script>
